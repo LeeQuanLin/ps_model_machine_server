@@ -355,9 +355,21 @@ main {
     margin-bottom:17px;
 }
 
-.field-note,.proof-size {
+.field-note,.preview-status {
     color:var(--muted);
     font-size:12px;
+}
+
+.proof-size {
+    color:var(--ink);
+    font-size:16px;
+    font-weight:700;
+    font-variant-numeric:tabular-nums;
+    white-space:nowrap;
+}
+
+.preview-status {
+    margin:8px 0 0;
 }
 
 .field-note {

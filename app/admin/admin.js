@@ -7,6 +7,7 @@ let renders = [];
 let artwork = null;
 let activePage = "create";
 let refreshingRenders = false;
+let refreshingTemplates = false;
 let submittingRender = false;
 let toastTimer;
 
@@ -109,8 +110,10 @@ function drawProof() {
     stage.imageRequest = null;
     $("preview-name").textContent = template?.relative_path || "暂未选择样机";
     $("preview-size").textContent = template ? dimensions(template) : "";
+    $("preview-status").hidden = !template?.thumbnail_pending;
     const empty = node("div", "empty-proof");
-    empty.append(node("span", "", "▧"), template ? "暂无预览" : "选择一个样机以预览");
+    empty.append(node("span", "", "▧"), template?.thumbnail_pending ? "正在生成缩略图…"
+        : template ? "暂无预览" : "选择一个样机以预览");
     stage.replaceChildren(empty);
     if (template) showImage(stage, template.thumbnail_url, template.filename);
 }
@@ -153,7 +156,7 @@ function drawTemplates() {
     }
     for (const template of shown) {
         const card = node("article", "asset-card");
-        const image = node("div", "asset-image", "暂无预览");
+        const image = node("div", "asset-image", template.thumbnail_pending ? "正在生成缩略图…" : "暂无预览");
         const info = node("div", "asset-info");
         const controls = node("div", "actions");
         controls.append(action("使用模板", () => {
@@ -375,7 +378,20 @@ $("template-file").addEventListener("change", (event) => handle(async () => {
     }
 }));
 window.addEventListener("hashchange", () => handle(openPage));
+async function loadPendingPreviews() {
+    if (refreshingTemplates) return;
+    refreshingTemplates = true;
+    const previous = templates;
+    try {
+        const items = await (await api("templates")).json();
+        if (templates === previous && JSON.stringify(items) !== JSON.stringify(previous)) updateTemplates(items);
+    } finally { refreshingTemplates = false; }
+}
+
 setInterval(() => {
+    if (activePage !== "renders" && token && templates.some((item) => item.thumbnail_pending)) {
+        handle(loadPendingPreviews);
+    }
     if (activePage === "renders" && token && renders.some((item) => item.status === "queued" || item.status === "running")) {
         handle(loadRenders);
     }

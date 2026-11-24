@@ -16,6 +16,7 @@ VERSIONS = {".psd": 1, ".psb": 2}
 THUMBNAIL_SIZE = (320, 320)
 THUMBNAIL_RESOURCE_ID = 1036
 MAX_THUMBNAIL_BYTES = 4 * 1024 * 1024
+SIDECAR_FORMATS = {".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg"}
 
 
 @dataclass(frozen=True)
@@ -27,6 +28,27 @@ class TemplateRecord:
     size_bytes: int
     thumbnail: bytes | None
     replacement_layers: tuple[ReplacementLayer, ...] = ()
+    thumbnail_media_type: str = "image/jpeg"
+    thumbnail_pending: bool = False
+
+
+def read_sidecar(template: Path) -> tuple[bytes, str] | None:
+    for suffix, media_type in SIDECAR_FORMATS.items():
+        candidate = template.with_suffix(suffix)
+        try:
+            if candidate.is_symlink() or not candidate.is_file():
+                continue
+            with candidate.open("rb") as stream:
+                data = stream.read(32 * 1024 * 1024 + 1)
+            if len(data) > 32 * 1024 * 1024:
+                raise ValueError("Preview exceeds 32 MB")
+            image_format = "PNG" if suffix == ".png" else "JPEG"
+            with Image.open(BytesIO(data), formats=[image_format]) as image:
+                image.verify()
+            return data, media_type
+        except (OSError, ValueError, SyntaxError, Image.DecompressionBombError) as error:
+            logger.warning("Could not use template preview %s: %s", candidate, error)
+    return None
 
 
 def load_templates(directory: Path) -> dict[str, TemplateRecord]:
@@ -62,10 +84,16 @@ def read_template(path: Path, relative_path: Path) -> TemplateRecord:
         except (OSError, ValueError, StructError) as error:
             logger.warning("Could not read replacement layers in %s: %s", path, error)
             layers = ()
-        stream.seek(26)
-        thumbnail = read_thumbnail(stream, version, size, path)
+        sidecar = read_sidecar(path.with_name(relative_path.name))
+        if sidecar is None:
+            stream.seek(26)
+            thumbnail = read_thumbnail(stream, version, size, path)
+            media_type = "image/jpeg"
+        else:
+            thumbnail, media_type = sidecar
     identifier = sha256(relative_path.as_posix().encode("utf-8")).hexdigest()
-    return TemplateRecord(identifier, relative_path, width, height, size, thumbnail, layers)
+    return TemplateRecord(identifier, relative_path, width, height, size, thumbnail, layers,
+                          media_type, thumbnail_pending=sidecar is None)
 
 
 def read_thumbnail(stream: BinaryIO, version: int, size: int, path: Path) -> bytes | None:

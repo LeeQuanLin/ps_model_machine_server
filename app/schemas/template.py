@@ -16,4 +16,5 @@ class TemplateSummary(BaseModel):
     height: int
     size_bytes: int
     thumbnail_url: str | None
+    thumbnail_pending: bool = False
     replacement_layers: list[ReplacementLayerSummary]

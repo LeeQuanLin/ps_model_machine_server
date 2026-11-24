@@ -74,7 +74,7 @@ Invoke-RestMethod -Method Post -Uri 'http://127.0.0.1:8765/photoshop/stop' -Head
 | `POST /photoshop/start` | `status=running`，返回进程 PID 和 COM 读取到的版本 | 已运行时返回 `changed=false` |
 | `POST /photoshop/stop` | 确认进程退出后返回 `status=stopped` | 当前会话中目标已关闭时返回 `changed=false` |
 | `GET /templates` | 返回样机列表，包含 ID、文件名、相对路径、像素尺寸、文件大小和缩略图地址 | 每次读取本次启动时扫描的目录快照 |
-| `GET /templates/{template_id}/thumbnail` | 返回 `image/jpeg` 缩略图 | ID 或缩略图不存在时返回 `404` |
+| `GET /templates/{template_id}/thumbnail` | 返回 JPEG 或 PNG 缩略图 | ID 或缩略图不存在时返回 `404` |
 
 ### 管理后台
 
@@ -90,7 +90,7 @@ Invoke-RestMethod -Method Post -Uri 'http://127.0.0.1:8765/photoshop/stop' -Head
 
 ### 样机列表和缩略图
 
-服务每次启动时递归读取 `PHOTOSHOP_TEMPLATE_DIR` 中的 PSD 和 PSB。增删或更新模板后，重启服务即可刷新列表和缩略图。缩略图优先使用 Photoshop 保存在文件里的预览，PSD 也可以从保存的合成图生成缩略图。没有可读取预览的样机仍会列出，`thumbnail_url` 为 `null`。读取缩略图地址时同样需要携带 Bearer Token。
+服务每次启动时递归读取 `PHOTOSHOP_TEMPLATE_DIR` 中的 PSD 和 PSB。上传、启动或刷新目录时，优先使用模板同目录下的同名图片，例如 `898.psd` 旁边的 `898.png`、`898.jpg` 或 `898.jpeg`。没有可用的同名图片时，后台通过 Photoshop 将模板按原比例导出为短边 800 px 的同名 PNG。导出期间可使用模板内嵌预览。导出失败时会保留可用的原预览，点击「刷新目录」可以重试。读取缩略图地址时同样需要携带 Bearer Token。
 
 新增或刷新样机时，服务同时读取名为「贴图区」的图层组，包含其中子组里的可替换智能对象。旧版样机没有这个组时，会识别顶层零不透明度的原始智能对象及它在画面中的可见副本。样机列表的 `replacement_layers` 包含每个可替换图层的名称、路径和 ID，提交 `POST /renders` 时可用 `layer_id` 指定。后台每次生成替换一个选项，共用该智能对象内容的副本会同步更新。
 

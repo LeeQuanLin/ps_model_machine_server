@@ -8,6 +8,7 @@ from starlette.concurrency import run_in_threadpool
 from app.api.dependencies import authorize
 from app.api.uploads import save_upload, upload_name
 from app.schemas.template import ReplacementLayerSummary, TemplateSummary
+from app.services.template_previews import queue_template_previews
 from app.services.templates import TemplateRecord, VERSIONS, load_templates, read_template
 
 
@@ -30,6 +31,7 @@ def summary(request: Request, template: TemplateRecord) -> TemplateSummary:
         size_bytes=template.size_bytes,
         thumbnail_url=(request.url_for("get_template_thumbnail", template_id=template.id).path
                        if template.thumbnail is not None else None),
+        thumbnail_pending=template.thumbnail_pending,
         replacement_layers=[ReplacementLayerSummary(id=layer.id, name=layer.name, path=layer.path)
                             for layer in template.replacement_layers],
     )
@@ -40,6 +42,7 @@ def refresh_templates(request: Request) -> list[TemplateSummary]:
     state = request.app.state
     with state.template_lock:
         state.templates = load_templates(state.settings.template_dir)
+    queue_template_previews(state)
     return list_templates(request)
 
 
@@ -69,6 +72,7 @@ def publish_template(request: Request, staged: Path, name: Path) -> TemplateSumm
             raise HTTPException(409, "目录中已有同名样机。")
         staged.rename(target)
         state.templates = {**state.templates, template.id: template}
+    queue_template_previews(state)
     return summary(request, template)
 
 
@@ -94,10 +98,10 @@ def delete_template(template_id: str, request: Request) -> Response:
 @router.get(
     "/{template_id}/thumbnail",
     response_class=Response,
-    responses={200: {"content": {"image/jpeg": {}}}, 404: {"description": "Thumbnail not found"}},
+    responses={200: {"content": {"image/jpeg": {}, "image/png": {}}}, 404: {"description": "Thumbnail not found"}},
 )
 def get_template_thumbnail(template_id: str, request: Request) -> Response:
     template = request.app.state.templates.get(template_id)
     if template is None or template.thumbnail is None:
         raise HTTPException(404, "Thumbnail not found.")
-    return Response(content=template.thumbnail, media_type="image/jpeg")
+    return Response(content=template.thumbnail, media_type=template.thumbnail_media_type)
