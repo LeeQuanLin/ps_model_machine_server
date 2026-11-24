@@ -6,7 +6,6 @@ param(
 
 $ErrorActionPreference = 'Stop'
 [Console]::OutputEncoding = [Text.UTF8Encoding]::new($false)
-$expectedExe = $env:PHOTOSHOP_EXE
 $sessionId = [Diagnostics.Process]::GetCurrentProcess().SessionId
 $progId = 'Photoshop.Application'
 
@@ -19,13 +18,23 @@ function Fail([int]$Code, [string]$Message) {
     exit 1
 }
 
+function Get-NormalizedPath([string]$Path) {
+    $fullPath = [IO.Path]::GetFullPath($Path)
+    $buffer = [Text.StringBuilder]::new(32768)
+    $length = [Mockup.WindowsPath]::GetLongPathNameW($fullPath, $buffer, $buffer.Capacity)
+    if ($length -eq 0) {
+        throw [ComponentModel.Win32Exception]::new([Runtime.InteropServices.Marshal]::GetLastWin32Error())
+    }
+    return $buffer.ToString()
+}
+
 function Get-PhotoshopProcesses {
     foreach ($process in [Diagnostics.Process]::GetProcessesByName('Photoshop')) {
         try {
             if ($process.SessionId -eq $sessionId -and -not $process.HasExited) {
                 $path = $process.MainModule.FileName
                 if (-not $path) { throw 'Could not determine the Photoshop process path.' }
-                [PSCustomObject]@{ Process = $process; Path = $path }
+                [PSCustomObject]@{ Process = $process; Path = Get-NormalizedPath $path }
             }
         } catch {
             if (-not $process.HasExited) { throw }
@@ -40,11 +49,11 @@ function Get-RegisteredExecutable {
     $serverKey = Get-Item -LiteralPath "Registry::HKEY_CLASSES_ROOT\CLSID\$classId\LocalServer32" -ErrorAction SilentlyContinue
     if (-not $serverKey) { return }
     $serverExe = $serverKey.GetValue('ServerExecutable')
-    if ($serverExe) { return [IO.Path]::GetFullPath($serverExe) }
+    if ($serverExe) { return Get-NormalizedPath $serverExe }
 
     $commandLine = [string]$serverKey.GetValue('')
     if ($commandLine -match '^\s*"([^"]+\.exe)"' -or $commandLine -match '^\s*(.+?\.exe)(?:\s|$)') {
-        return [IO.Path]::GetFullPath($Matches[1])
+        return Get-NormalizedPath $Matches[1]
     }
 }
 
@@ -52,6 +61,12 @@ try {
     if ($sessionId -eq 0) {
         Fail 503 'Run this service in the logged-in Windows user desktop session.'
     }
+
+    Add-Type -Namespace Mockup -Name WindowsPath -MemberDefinition @'
+[DllImport("kernel32.dll", CharSet = CharSet.Unicode, ExactSpelling = true, SetLastError = true)]
+public static extern uint GetLongPathNameW(string path, System.Text.StringBuilder buffer, uint capacity);
+'@
+    $expectedExe = Get-NormalizedPath $env:PHOTOSHOP_EXE
 
     $before = @(Get-PhotoshopProcesses)
     $target = @($before | Where-Object { $_.Path -eq $expectedExe })
@@ -89,8 +104,9 @@ try {
             $app = New-Object -ComObject $progId
         }
 
-        $appFolder = [IO.Path]::GetFullPath([string]$app.DoJavaScript('String(app.path.fsName)'))
-        if ($appFolder.TrimEnd('\') -ne [IO.Path]::GetDirectoryName($expectedExe).TrimEnd('\')) {
+        $appFolder = [string]$app.DoJavaScript('String(app.path.fsName)')
+        $appExe = Get-NormalizedPath ([IO.Path]::Combine($appFolder, 'Photoshop.exe'))
+        if ($appExe -ne $expectedExe) {
             Fail 409 'The Photoshop COM object belongs to a different installation.'
         }
         $running = @(Get-PhotoshopProcesses)
