@@ -1,0 +1,6 @@
+/.env
+/photoshop_control/.env
+/.venv/
+__pycache__/
+/data/
+/.codex/
