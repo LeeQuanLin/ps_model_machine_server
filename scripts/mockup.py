@@ -6,13 +6,18 @@ import os
 from pathlib import Path
 import shutil
 import subprocess
+import sys
 import tempfile
 
+if not __package__:
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-SOURCE = Path(r"E:\Users\lee\A0-WorkData\2.店铺文件\7.棉创U选旗舰店\样机\898(1).psd")
+from app.core.config import PROJECT_ROOT, load_environment, resolve_template_dir
+
+DEFAULT_TEMPLATE = "898(1).psd"
 A_SIDE_LAYER = 21
 JSX = Path(__file__).with_name("render_mockup.jsx")
-DATA = Path(__file__).resolve().parents[1] / "data"
+DATA = PROJECT_ROOT / "data"
 OUTPUT_EXTENSIONS = {".png", ".jpg", ".jpeg"}
 
 
@@ -64,7 +69,8 @@ def run_in_photoshop(script):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--template", type=Path, help="Photoshop PSD or PSB mockup.")
+    parser.add_argument("--template", type=Path,
+                        help="PSD or PSB path, or a filename in PHOTOSHOP_TEMPLATE_DIR. Defaults to 898(1).psd.")
     parser.add_argument("--art", required=True, type=Path, help="Artwork image.")
     parser.add_argument("--out", type=Path, help="Destination. Defaults to data/<art>_<template>.png.")
     parser.add_argument("--layer", help="Smart Object layer name or ID; optional for a single visible Smart Object.")
@@ -73,7 +79,11 @@ def main():
                         help="Prepare JSX for File > Scripts > Browse in Photoshop.")
     args = parser.parse_args()
 
-    template = (args.template or SOURCE).resolve()
+    template = args.template
+    if template is None or (not template.is_absolute() and not template.is_file()):
+        template_dir = resolve_template_dir(load_environment())
+        template = template_dir / (template or DEFAULT_TEMPLATE)
+    template = template.resolve()
     artwork = args.art.resolve()
     output = (args.out or DATA / f"{artwork.stem}_{template.stem}.png").resolve()
     baseline = args.baseline.resolve() if args.baseline else None

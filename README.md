@@ -1,6 +1,6 @@
 # Photoshop 控制服务
 
-Windows 上的 FastAPI 服务。通过 COM 启动或正常关闭 `.env` 指定的 Photoshop。两个接口都要求 `Authorization: Bearer <token>`。
+Windows 上的 FastAPI 服务。通过 COM 启动或正常关闭 `.env` 指定的 Photoshop，并提供样机目录和缩略图。业务接口都要求 `Authorization: Bearer <token>`。
 
 ## 目录结构
 
@@ -12,6 +12,7 @@ app/
   schemas/                 API 响应模型
   services/                Photoshop COM 调用及 PowerShell 脚本
 scripts/                   命令行贴样机和模板检查脚本
+templates/                 默认存放 PSD／PSB 样机模板
 data/                      本地出图结果与打包文件
   fixtures/                网格测试输入
   archive/                 898 样机历史试跑的副本和记录
@@ -32,6 +33,8 @@ notepad .\.env
 ```
 
 将 `PHOTOSHOP_EXE` 填成绿色版 **实际的 `Photoshop.exe` 绝对路径**，并将生成的 Token 填到 `PHOTOSHOP_API_TOKEN`。也可以用同名系统环境变量覆盖 `.env`。
+
+`PHOTOSHOP_TEMPLATE_DIR` 默认指向项目根目录下的 `templates/`。可以填绝对路径，也可以填相对于项目根目录的路径。Git 会忽略默认目录中的模板内容，以及项目内其他目录的 PSD 和 PSB 文件。
 
 从旧版升级时，已有的 `photoshop_control/.env` 请移到项目根目录并继续使用。
 
@@ -70,15 +73,25 @@ Invoke-RestMethod -Method Post -Uri 'http://127.0.0.1:8765/photoshop/stop' -Head
 | --- | --- | --- |
 | `POST /photoshop/start` | `status=running`，返回进程 PID 和 COM 读取到的版本 | 已运行时返回 `changed=false` |
 | `POST /photoshop/stop` | 确认进程退出后返回 `status=stopped` | 当前会话中目标已关闭时返回 `changed=false` |
+| `GET /templates` | 返回样机列表，包含 ID、文件名、相对路径、像素尺寸、文件大小和缩略图地址 | 每次读取本次启动时扫描的目录快照 |
+| `GET /templates/{template_id}/thumbnail` | 返回 `image/jpeg` 缩略图 | ID 或缩略图不存在时返回 `404` |
 
 `401` 表示 Token 缺失或不匹配。`409` 表示 Photoshop 有未保存的文档、注册指向另一安装，或当前会话存在冲突的 Photoshop 进程。`503` 表示 COM 或 Windows 会话不可用。`504` 表示超时，可查看 Photoshop 桌面是否有弹窗。关闭请求始终使用正常退出流程，未保存的文档需要先保存或手动处理。
 
-## 命令行贴样机
+### 样机列表和缩略图
 
-从项目根目录运行。省略 `--out` 时默认保存为 `data/<图案名>_<模板名>.png`。
+服务每次启动时递归读取 `PHOTOSHOP_TEMPLATE_DIR` 中的 PSD 和 PSB。增删或更新模板后，重启服务即可刷新列表和缩略图。缩略图优先使用 Photoshop 保存在文件里的预览，PSD 也可以从保存的合成图生成缩略图。没有可读取预览的样机仍会列出，`thumbnail_url` 为 `null`。读取缩略图地址时同样需要携带 Bearer Token。
 
 ```powershell
-python -m scripts.mockup --art 'D:\artwork.png' --template 'D:\898.psd' --layer 21
+Invoke-RestMethod -Method Get -Uri 'http://127.0.0.1:8765/templates' -Headers $headers
+```
+
+## 命令行贴样机
+
+从项目根目录运行。`--template` 支持绝对路径、当前目录中已有的相对路径和模板目录里的文件名。省略 `--template` 时使用模板目录中的 `898(1).psd`，默认图层 ID 为 `21`。省略 `--out` 时默认保存为 `data/<图案名>_<模板名>.png`。
+
+```powershell
+python -m scripts.mockup --art 'D:\artwork.png' --template '898(1).psd' --layer 21
 ```
 
 `--prepare-only` 会生成可以在 Photoshop 中打开的 JSX。`data/archive/` 中的旧 JSX 和报告用于查阅历史结果。下载的源码包包含网格测试图，样机 PSD／PSB 需自行提供。

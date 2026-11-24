@@ -1,0 +1,117 @@
+import logging
+import os
+from dataclasses import dataclass
+from hashlib import sha256
+from io import BytesIO
+from pathlib import Path
+from struct import error as StructError, unpack
+from typing import BinaryIO
+
+from PIL import Image
+
+
+logger = logging.getLogger(__name__)
+VERSIONS = {".psd": 1, ".psb": 2}
+THUMBNAIL_SIZE = (320, 320)
+THUMBNAIL_RESOURCE_ID = 1036
+MAX_THUMBNAIL_BYTES = 4 * 1024 * 1024
+
+
+@dataclass(frozen=True)
+class TemplateRecord:
+    id: str
+    path: Path
+    width: int
+    height: int
+    size_bytes: int
+    thumbnail: bytes | None
+
+
+def load_templates(directory: Path) -> dict[str, TemplateRecord]:
+    directory = directory.resolve()
+    templates: dict[str, TemplateRecord] = {}
+    if not directory.exists():
+        logger.info("Photoshop template directory does not exist: %s", directory)
+        return templates
+
+    for path in sorted(directory.rglob("*"), key=lambda path: (str(path).casefold(), str(path))):
+        if path.suffix.lower() not in VERSIONS:
+            continue
+        try:
+            if path.is_file() and path.resolve().is_relative_to(directory):
+                template = read_template(path, path.relative_to(directory))
+                templates[template.id] = template
+        except (OSError, RuntimeError, ValueError, StructError) as error:
+            logger.warning("Skipping unreadable Photoshop template %s: %s", path, error)
+    logger.info("Loaded %d Photoshop templates from %s", len(templates), directory)
+    return templates
+
+
+def read_template(path: Path, relative_path: Path) -> TemplateRecord:
+    with path.open("rb") as stream:
+        signature, version, height, width = unpack(">4sH8xII4x", stream.read(26))
+        if signature != b"8BPS" or version != VERSIONS[path.suffix.lower()] or not (width and height):
+            raise ValueError("Invalid Photoshop document header")
+        size = os.fstat(stream.fileno()).st_size
+        thumbnail = read_thumbnail(stream, version, size, path)
+    identifier = sha256(relative_path.as_posix().encode("utf-8")).hexdigest()
+    return TemplateRecord(identifier, relative_path, width, height, size, thumbnail)
+
+
+def read_thumbnail(stream: BinaryIO, version: int, size: int, path: Path) -> bytes | None:
+    try:
+        thumbnail = embedded_thumbnail(stream, size)
+        if thumbnail is not None:
+            return thumbnail
+        if version == 1:
+            stream.seek(0)
+            return merged_thumbnail(stream)
+    except (OSError, ValueError, SyntaxError, StructError, Image.DecompressionBombError) as error:
+        logger.warning("Could not generate a thumbnail for %s: %s", path, error)
+        return None
+    logger.warning("No supported preview for Photoshop template %s", path)
+    return None
+
+
+def embedded_thumbnail(stream: BinaryIO, file_size: int) -> bytes | None:
+    # The color mode and image resources sections have 32-bit lengths in PSD and PSB.
+    color_mode_size, = unpack(">I", stream.read(4))
+    stream.seek(color_mode_size, os.SEEK_CUR)
+    resource_size, = unpack(">I", stream.read(4))
+    end = stream.tell() + resource_size
+    if end > file_size:
+        raise ValueError("Truncated image resources section")
+
+    while end - stream.tell() >= 12:
+        _, resource_id, name_size = unpack(">4sHB", stream.read(7))
+        stream.seek(name_size + ((name_size + 1) % 2), os.SEEK_CUR)
+        size, = unpack(">I", stream.read(4))
+        start = stream.tell()
+        next_resource = start + size + (size % 2)
+        if next_resource > end:
+            raise ValueError("Truncated image resource")
+        if resource_id == THUMBNAIL_RESOURCE_ID and 28 < size <= MAX_THUMBNAIL_BYTES:
+            encoding, _, _, _, _, jpeg_size = unpack(">6I4x", stream.read(28))
+            if encoding == 1 and 0 < jpeg_size <= size - 28:
+                jpeg = stream.read(jpeg_size)
+                with Image.open(BytesIO(jpeg), formats=["JPEG"]) as preview:
+                    if preview.width <= THUMBNAIL_SIZE[0] and preview.height <= THUMBNAIL_SIZE[1]:
+                        preview.load()
+                        return jpeg
+        stream.seek(next_resource)
+    return None
+
+
+def merged_thumbnail(stream: BinaryIO) -> bytes | None:
+    with Image.open(stream, formats=["PSD"]) as image:
+        # The version information resource records whether the merged image was saved.
+        for resource_id, _, payload in image.resources:
+            if resource_id == 1057 and payload[4:5] == b"\x00":
+                return None
+        image.thumbnail(THUMBNAIL_SIZE, Image.Resampling.LANCZOS)
+        rgba = image.convert("RGBA")
+        background = Image.new("RGB", rgba.size, "white")
+        background.paste(rgba, mask=rgba.getchannel("A"))
+        output = BytesIO()
+        background.save(output, format="JPEG", quality=85)
+        return output.getvalue()
