@@ -81,7 +81,7 @@ Invoke-RestMethod -Method Post -Uri 'http://127.0.0.1:8765/photoshop/stop' -Head
 打开 `http://127.0.0.1:8765/`，输入 `.env` 中的 `PHOTOSHOP_API_TOKEN`。
 
 - **样机管理**支持上传 PSD 或 PSB、刷新目录、搜索、预览缩略图和删除样机。最大上传大小为 8 GB。
-- **生成样机**支持上传 PNG 或 JPEG（最大 50 MB），选择样机并提交后台出图任务。遇到多个可见智能对象时，填写目标图层的名称或 ID。
+- **生成样机**支持上传 PNG 或 JPEG（最大 50 MB）。选择样机后，从下拉菜单选择要替换的图层，再提交出图任务。
 - **生成图**展示排队、生成中、完成和失败状态，支持预览、下载原尺寸 PNG 和删除记录。PNG 文件与任务记录保存在 `data/renders/`。
 
 提交出图后，服务在当前 Windows 桌面会话里通过已注册的 Photoshop COM 串行渲染。服务重启时，中断的任务会显示为失败。
@@ -91,6 +91,8 @@ Invoke-RestMethod -Method Post -Uri 'http://127.0.0.1:8765/photoshop/stop' -Head
 ### 样机列表和缩略图
 
 服务每次启动时递归读取 `PHOTOSHOP_TEMPLATE_DIR` 中的 PSD 和 PSB。增删或更新模板后，重启服务即可刷新列表和缩略图。缩略图优先使用 Photoshop 保存在文件里的预览，PSD 也可以从保存的合成图生成缩略图。没有可读取预览的样机仍会列出，`thumbnail_url` 为 `null`。读取缩略图地址时同样需要携带 Bearer Token。
+
+新增或刷新样机时，服务同时读取名为「贴图区」的图层组，包含其中子组里的可替换智能对象。旧版样机没有这个组时，会识别顶层零不透明度的原始智能对象及它在画面中的可见副本。样机列表的 `replacement_layers` 包含每个可替换图层的名称、路径和 ID，提交 `POST /renders` 时可用 `layer_id` 指定。后台每次生成替换一个选项，共用该智能对象内容的副本会同步更新。
 
 ```powershell
 Invoke-RestMethod -Method Get -Uri 'http://127.0.0.1:8765/templates' -Headers $headers

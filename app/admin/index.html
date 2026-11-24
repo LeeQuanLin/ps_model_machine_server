@@ -27,15 +27,15 @@
             <div class="section-title"><h2>准备素材</h2><span class="format-pill">PNG</span></div>
             <label class="field-label" for="template-select">样机模板</label>
             <select id="template-select" required><option value="">请选择样机</option></select>
+            <label class="field-label" for="layer">替换图层</label>
+            <select id="layer" aria-describedby="layer-note" required disabled><option value="">请先选择样机</option></select>
+            <p class="field-note" id="layer-note" aria-live="polite" hidden></p>
             <label class="field-label" for="artwork-input">印花图片</label>
             <label class="drop-zone" id="drop-zone" for="artwork-input">
               <input id="artwork-input" type="file" accept="image/png,image/jpeg" required>
               <span class="upload-icon" aria-hidden="true">↑</span><strong id="upload-text">点击选择，或拖放图片</strong><small id="upload-meta">PNG、JPEG · 最大 50 MB</small>
             </label>
-            <div class="layer-label"><label class="field-label" for="layer">智能对象图层</label><span>可选</span></div>
-            <input id="layer" maxlength="180" type="text" placeholder="自动选择，或输入图层名称 / ID">
-            <p class="field-note">模板有多个可见智能对象时，需要指定图层。</p>
-            <button class="button primary render-action" type="submit" id="render-submit"><span aria-hidden="true">✦</span> 生成 PNG</button>
+            <button class="button primary render-action" type="submit" id="render-submit" disabled><span aria-hidden="true">✦</span> 生成 PNG</button>
           </form>
           <section class="proof panel" aria-labelledby="proof-title">
             <div class="section-title"><h2 id="proof-title">样机预览</h2><span class="proof-size" id="preview-size"></span></div>

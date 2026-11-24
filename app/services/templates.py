@@ -9,6 +9,7 @@ from typing import BinaryIO
 
 from PIL import Image
 
+from app.services.template_layers import ReplacementLayer, read_replacement_layers
 
 logger = logging.getLogger(__name__)
 VERSIONS = {".psd": 1, ".psb": 2}
@@ -25,6 +26,7 @@ class TemplateRecord:
     height: int
     size_bytes: int
     thumbnail: bytes | None
+    replacement_layers: tuple[ReplacementLayer, ...] = ()
 
 
 def load_templates(directory: Path) -> dict[str, TemplateRecord]:
@@ -55,9 +57,15 @@ def read_template(path: Path, relative_path: Path) -> TemplateRecord:
         size = os.fstat(stream.fileno()).st_size
         if size < (44 if version == 2 else 40):
             raise ValueError("Truncated Photoshop document")
+        try:
+            layers = read_replacement_layers(stream, version, size)
+        except (OSError, ValueError, StructError) as error:
+            logger.warning("Could not read replacement layers in %s: %s", path, error)
+            layers = ()
+        stream.seek(26)
         thumbnail = read_thumbnail(stream, version, size, path)
     identifier = sha256(relative_path.as_posix().encode("utf-8")).hexdigest()
-    return TemplateRecord(identifier, relative_path, width, height, size, thumbnail)
+    return TemplateRecord(identifier, relative_path, width, height, size, thumbnail, layers)
 
 
 def read_thumbnail(stream: BinaryIO, version: int, size: int, path: Path) -> bytes | None:

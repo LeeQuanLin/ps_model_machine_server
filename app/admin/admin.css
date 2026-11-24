@@ -341,7 +341,7 @@ main {
     margin:0 0 7px;
 }
 
-.setup select,.setup input[type="text"],.dialog input,.list-toolbar input,.filter select {
+.setup select,.dialog input,.list-toolbar input,.filter select {
     min-height:40px;
     border:1px solid #dcd7e5;
     border-radius:7px;
@@ -355,20 +355,13 @@ main {
     margin-bottom:17px;
 }
 
-.layer-label {
-    display:flex;
-    justify-content:space-between;
-    align-items:baseline;
-    margin-top:17px;
-}
-
-.layer-label span,.field-note,.proof-size {
+.field-note,.proof-size {
     color:var(--muted);
     font-size:12px;
 }
 
 .field-note {
-    margin:7px 0 17px;
+    margin:-9px 0 17px;
     line-height:1.55;
 }
 
@@ -423,6 +416,7 @@ main {
 }
 
 .render-action {
+    margin-top:17px;
     width:100%;
     min-height:44px;
 }

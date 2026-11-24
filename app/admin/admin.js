@@ -7,6 +7,7 @@ let renders = [];
 let artwork = null;
 let activePage = "create";
 let refreshingRenders = false;
+let submittingRender = false;
 let toastTimer;
 
 function node(tag, className, text) {
@@ -103,6 +104,7 @@ function updateTemplates(items, selected = $("template-select").value) {
 
 function drawProof() {
     const template = templates.find((item) => item.id === $("template-select").value);
+    drawLayers(template);
     const stage = $("proof-stage");
     stage.imageRequest = null;
     $("preview-name").textContent = template?.relative_path || "暂未选择样机";
@@ -111,6 +113,32 @@ function drawProof() {
     empty.append(node("span", "", "▧"), template ? "暂无预览" : "选择一个样机以预览");
     stage.replaceChildren(empty);
     if (template) showImage(stage, template.thumbnail_url, template.filename);
+}
+
+function updateRenderButton() {
+    $("render-submit").disabled = submittingRender || !$("layer").value;
+}
+
+function drawLayers(template) {
+    const select = $("layer");
+    const previous = select.dataset.template === template?.id ? select.value : "";
+    const layers = template?.replacement_layers || [];
+    const placeholder = !template ? "请先选择样机" : layers.length ? "请选择要替换的图层" : "暂无可替换图层";
+    select.replaceChildren(new Option(placeholder, ""));
+    for (const layer of layers) {
+        const path = layer.path.replace(/^.*?贴图区 \/ /, "");
+        const label = layers.some((other) => other.id !== layer.id && other.path === layer.path)
+            ? `${path}（ID ${layer.id}）` : path;
+        select.add(new Option(label, layer.id));
+    }
+    select.dataset.template = template?.id || "";
+    select.disabled = layers.length === 0;
+    select.value = layers.some((layer) => String(layer.id) === previous) ? previous
+        : layers.length === 1 ? String(layers[0].id) : "";
+    const note = $("layer-note");
+    note.hidden = !template || layers.length > 0;
+    note.textContent = note.hidden ? "" : "请在样机的「贴图区」组内放置可替换的智能对象，再刷新样机目录。";
+    updateRenderButton();
 }
 
 function drawTemplates() {
@@ -277,6 +305,7 @@ for (const button of document.querySelectorAll("[data-close]")) {
     button.addEventListener("click", () => $(button.dataset.close).close());
 }
 $("template-select").addEventListener("change", drawProof);
+$("layer").addEventListener("change", updateRenderButton);
 $("template-search").addEventListener("input", drawTemplates);
 $("render-filter").addEventListener("change", drawRenders);
 $("artwork-input").addEventListener("change", (event) => selectArtwork(event.target.files[0] || null));
@@ -294,12 +323,11 @@ dropZone.addEventListener("drop", (event) => {
 $("render-form").addEventListener("submit", (event) => {
     event.preventDefault();
     handle(async () => {
-        if (!requireConnection() || !artwork) return;
+        if (!requireConnection() || !artwork || !$("layer").value || submittingRender) return;
         const button = $("render-submit");
-        const params = {template_id: $("template-select").value, filename: artwork.name};
-        const layer = $("layer").value.trim();
-        if (layer) params.layer = layer;
-        button.disabled = true;
+        const params = {template_id: $("template-select").value, filename: artwork.name, layer_id: $("layer").value};
+        submittingRender = true;
+        updateRenderButton();
         button.textContent = "正在提交…";
         try {
             const queued = await (await api(query("renders", params), {method: "POST", body: artwork})).json();
@@ -311,7 +339,8 @@ $("render-form").addEventListener("submit", (event) => {
             else location.hash = "renders";
             notify("已提交生成任务");
         } finally {
-            button.disabled = false;
+            submittingRender = false;
+            updateRenderButton();
             button.textContent = "✦ 生成 PNG";
         }
     });

@@ -7,7 +7,7 @@ from starlette.concurrency import run_in_threadpool
 
 from app.api.dependencies import authorize
 from app.api.uploads import save_upload, upload_name
-from app.schemas.template import TemplateSummary
+from app.schemas.template import ReplacementLayerSummary, TemplateSummary
 from app.services.templates import TemplateRecord, VERSIONS, load_templates, read_template
 
 
@@ -30,6 +30,8 @@ def summary(request: Request, template: TemplateRecord) -> TemplateSummary:
         size_bytes=template.size_bytes,
         thumbnail_url=(request.url_for("get_template_thumbnail", template_id=template.id).path
                        if template.thumbnail is not None else None),
+        replacement_layers=[ReplacementLayerSummary(id=layer.id, name=layer.name, path=layer.path)
+                            for layer in template.replacement_layers],
     )
 
 
