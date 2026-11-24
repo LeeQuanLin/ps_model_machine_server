@@ -76,9 +76,14 @@
     }
 
     function insertArtwork(doc, artwork) {
+        app.activeDocument = doc;
         for (var i = 0; i < doc.layers.length; i++) doc.layers[i].visible = false;
-        var sourceBounds = artwork.activeLayer.bounds;
-        var placed = artwork.activeLayer.duplicate(doc, ElementPlacement.PLACEATBEGINNING);
+
+        app.activeDocument = artwork;
+        var sourceLayer = artwork.activeLayer;
+        var sourceBounds = sourceLayer.bounds;
+        var placed = sourceLayer.duplicate(doc, ElementPlacement.PLACEATBEGINNING);
+
         app.activeDocument = doc;
         placed.name = "Mockup artwork";
         placed.visible = true;
