@@ -1,6 +1,6 @@
 param(
     [Parameter(Mandatory = $true)]
-    [ValidateSet('start', 'stop')]
+    [ValidateSet('start', 'stop', 'render')]
     [string]$Operation
 )
 
@@ -119,6 +119,12 @@ public static extern uint GetLongPathNameW(string path, System.Text.StringBuilde
                 status = 'running'; changed = ($target.Count -eq 0)
                 pid = $running[0].Process.Id; version = [string]$app.Version
             }
+            exit 0
+        }
+
+        if ($Operation -eq 'render') {
+            $null = $app.DoJavaScriptFile($env:MOCKUP_JSX_PATH)
+            Write-Result @{ rendered = $true }
             exit 0
         }
 

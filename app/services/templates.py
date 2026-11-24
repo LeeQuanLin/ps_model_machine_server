@@ -50,9 +50,11 @@ def load_templates(directory: Path) -> dict[str, TemplateRecord]:
 def read_template(path: Path, relative_path: Path) -> TemplateRecord:
     with path.open("rb") as stream:
         signature, version, height, width = unpack(">4sH8xII4x", stream.read(26))
-        if signature != b"8BPS" or version != VERSIONS[path.suffix.lower()] or not (width and height):
+        if signature != b"8BPS" or version != VERSIONS[relative_path.suffix.lower()] or not (width and height):
             raise ValueError("Invalid Photoshop document header")
         size = os.fstat(stream.fileno()).st_size
+        if size < (44 if version == 2 else 40):
+            raise ValueError("Truncated Photoshop document")
         thumbnail = read_thumbnail(stream, version, size, path)
     identifier = sha256(relative_path.as_posix().encode("utf-8")).hexdigest()
     return TemplateRecord(identifier, relative_path, width, height, size, thumbnail)

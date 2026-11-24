@@ -1,0 +1,77 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>样机工坊</title>
+  <link rel="stylesheet" href="./admin-assets/admin.css">
+  <script src="./admin-assets/admin.js" defer></script>
+</head>
+<body>
+  <aside class="sidebar">
+    <a href="#create" class="brand"><span class="brand-mark" aria-hidden="true"><i></i><i></i><i></i></span><span>样机工坊<small>MOCKUP STUDIO</small></span></a>
+    <nav aria-label="后台导航">
+      <a href="#create" data-page="create"><span aria-hidden="true">✦</span>生成样机</a>
+      <a href="#templates" data-page="templates"><span aria-hidden="true">▦</span>样机管理</a>
+      <a href="#renders" data-page="renders"><span aria-hidden="true">▧</span>生成图</a>
+    </nav>
+    <div class="sidebar-bottom"><button class="connection" id="connection" type="button"><span class="status-dot"></span><span id="connection-text">连接服务</span></button></div>
+  </aside>
+  <div class="shell">
+    <header class="topbar"><span>工作空间 <b aria-hidden="true">/</b> <strong id="current-page">生成样机</strong></span><a href="./docs" target="_blank" rel="noopener">API 文档 <span aria-hidden="true">↗</span></a></header>
+    <main>
+      <section id="page-create" class="page">
+        <div class="page-title"><div><h1>生成样机</h1><p>选择一个样机，上传印花或图案，生成原尺寸 PNG。</p></div><a class="button secondary" href="#renders">查看生成图 <span aria-hidden="true">↗</span></a></div>
+        <div class="workspace">
+          <form class="setup panel" id="render-form">
+            <div class="section-title"><h2>准备素材</h2><span class="format-pill">PNG</span></div>
+            <label class="field-label" for="template-select">样机模板</label>
+            <select id="template-select" required><option value="">请选择样机</option></select>
+            <label class="field-label" for="artwork-input">印花图片</label>
+            <label class="drop-zone" id="drop-zone" for="artwork-input">
+              <input id="artwork-input" type="file" accept="image/png,image/jpeg" required>
+              <span class="upload-icon" aria-hidden="true">↑</span><strong id="upload-text">点击选择，或拖放图片</strong><small id="upload-meta">PNG、JPEG · 最大 50 MB</small>
+            </label>
+            <div class="layer-label"><label class="field-label" for="layer">智能对象图层</label><span>可选</span></div>
+            <input id="layer" maxlength="180" type="text" placeholder="自动选择，或输入图层名称 / ID">
+            <p class="field-note">模板有多个可见智能对象时，需要指定图层。</p>
+            <button class="button primary render-action" type="submit" id="render-submit"><span aria-hidden="true">✦</span> 生成 PNG</button>
+          </form>
+          <section class="proof panel" aria-labelledby="proof-title">
+            <div class="section-title"><h2 id="proof-title">样机预览</h2><span class="proof-size" id="preview-size"></span></div>
+            <div class="proof-stage" id="proof-stage"><div class="empty-proof"><span aria-hidden="true">▧</span>选择一个样机以预览</div></div>
+            <div class="proof-caption"><span id="preview-name">暂未选择样机</span><a href="#templates">管理样机 <span aria-hidden="true">↗</span></a></div>
+          </section>
+        </div>
+      </section>
+      <section id="page-templates" class="page" hidden>
+        <div class="page-title"><div><h1>样机管理</h1><p>浏览样机模板，上传 PSD 或 PSB，选择需要用于出图的模板。</p></div><div class="actions"><button class="button secondary" id="refresh-templates" type="button">刷新目录</button><button class="button primary" id="upload-template" type="button"><span aria-hidden="true">＋</span> 上传样机</button><input id="template-file" type="file" accept=".psd,.psb" hidden></div></div>
+        <div class="list-toolbar"><strong id="template-count">样机</strong><input id="template-search" type="search" placeholder="搜索样机名称" aria-label="搜索样机名称"></div>
+        <div class="asset-grid" id="template-grid"></div>
+      </section>
+      <section id="page-renders" class="page" hidden>
+        <div class="page-title"><div><h1>生成图</h1><p>查看出图进度、预览成品或下载原尺寸 PNG。</p></div><a class="button primary" href="#create"><span aria-hidden="true">＋</span> 新建生成</a></div>
+        <div class="list-toolbar"><strong id="render-count">生成记录</strong><label class="filter"><span>状态</span><select id="render-filter"><option value="all">全部状态</option><option value="completed">已完成</option><option value="running">生成中</option><option value="queued">排队中</option><option value="failed">失败</option></select></label></div>
+        <div id="render-list" class="render-list panel"></div>
+      </section>
+    </main>
+  </div>
+  <dialog id="login-dialog" class="dialog" aria-labelledby="login-title">
+    <form id="login-form" class="dialog-body">
+      <div class="section-title"><h2 id="login-title">连接样机服务</h2><button type="button" class="icon-button" data-close="login-dialog" aria-label="关闭">×</button></div>
+      <p>输入服务配置中的 API Token。</p>
+      <label class="field-label" for="token-input">API Token</label>
+      <input id="token-input" type="password" autocomplete="off" required>
+      <p id="login-error" class="field-error" role="alert" hidden></p>
+      <button class="button primary" type="submit" id="login-submit">连接</button>
+    </form>
+  </dialog>
+  <dialog id="preview-dialog" class="dialog preview-dialog" aria-labelledby="dialog-title">
+    <div class="dialog-body"><div class="section-title"><h2 id="dialog-title">预览生成图</h2><button type="button" class="icon-button" data-close="preview-dialog" aria-label="关闭">×</button></div><div class="dialog-preview" id="dialog-preview"></div></div>
+  </dialog>
+  <dialog id="confirm-dialog" class="dialog" aria-labelledby="confirm-title">
+    <form method="dialog" class="dialog-body"><h2 id="confirm-title">删除</h2><p id="confirm-message"></p><div class="actions"><button class="button secondary" value="cancel" autofocus>取消</button><button class="button danger" value="delete">删除</button></div></form>
+  </dialog>
+  <div class="toast" id="toast" role="status" hidden></div>
+</body>
+</html>

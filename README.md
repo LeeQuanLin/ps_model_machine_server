@@ -76,6 +76,16 @@ Invoke-RestMethod -Method Post -Uri 'http://127.0.0.1:8765/photoshop/stop' -Head
 | `GET /templates` | 返回样机列表，包含 ID、文件名、相对路径、像素尺寸、文件大小和缩略图地址 | 每次读取本次启动时扫描的目录快照 |
 | `GET /templates/{template_id}/thumbnail` | 返回 `image/jpeg` 缩略图 | ID 或缩略图不存在时返回 `404` |
 
+### 管理后台
+
+打开 `http://127.0.0.1:8765/`，输入 `.env` 中的 `PHOTOSHOP_API_TOKEN`。
+
+- **样机管理**支持上传 PSD 或 PSB、刷新目录、搜索、预览缩略图和删除样机。最大上传大小为 8 GB。
+- **生成样机**支持上传 PNG 或 JPEG（最大 50 MB），选择样机并提交后台出图任务。遇到多个可见智能对象时，填写目标图层的名称或 ID。
+- **生成图**展示排队、生成中、完成和失败状态，支持预览、下载原尺寸 PNG 和删除记录。PNG 文件与任务记录保存在 `data/renders/`。
+
+提交出图后，服务在当前 Windows 桌面会话里通过已注册的 Photoshop COM 串行渲染。服务重启时，中断的任务会显示为失败。
+
 `401` 表示 Token 缺失或不匹配。`409` 表示 Photoshop 有未保存的文档、注册指向另一安装，或当前会话存在冲突的 Photoshop 进程。`503` 表示 COM 或 Windows 会话不可用。`504` 表示超时，可查看 Photoshop 桌面是否有弹窗。关闭请求始终使用正常退出流程，未保存的文档需要先保存或手动处理。
 
 ### 样机列表和缩略图

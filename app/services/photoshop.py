@@ -26,18 +26,27 @@ class PhotoshopService:
         self.lock = Lock()
 
     def control(self, action: Literal["start", "stop"]) -> PhotoshopState:
+        return PhotoshopState.model_validate(self._run(action))
+
+    def render(self, script: Path) -> None:
+        self._run("render", script)
+
+    def _run(self, action: Literal["start", "stop", "render"], script: Path | None = None) -> dict:
         if os.name != "nt":
             raise PhotoshopControlError(503, "Photoshop COM requires Windows.")
 
         powershell = Path(os.environ["SystemRoot"]) / "System32/WindowsPowerShell/v1.0/powershell.exe"
         env = {**os.environ, "PHOTOSHOP_EXE": str(self.photoshop_exe)}
         env.pop("PHOTOSHOP_API_TOKEN", None)
+        if script is not None:
+            env["MOCKUP_JSX_PATH"] = str(script)
         try:
             with self.lock:
                 process = subprocess.run(
                     [str(powershell), "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "RemoteSigned",
                      "-File", str(COM_HELPER), "-Operation", action],
-                    env=env, capture_output=True, encoding="utf-8", errors="replace", timeout=COM_TIMEOUT,
+                    env=env, capture_output=True, encoding="utf-8", errors="replace",
+                    timeout=300 if script is not None else COM_TIMEOUT,
                     creationflags=subprocess.CREATE_NO_WINDOW, check=False,
                 )
         except subprocess.TimeoutExpired as error:
@@ -48,8 +57,10 @@ class PhotoshopService:
 
         try:
             result = json.loads(process.stdout.strip())
+            if not isinstance(result, dict):
+                raise ValueError("Expected a JSON object from Photoshop COM helper")
             if process.returncode == 0:
-                return PhotoshopState.model_validate(result)
+                return result
             raise PhotoshopControlError(result["status_code"], result["detail"])
         except (ValueError, TypeError, KeyError) as error:
             logger.error("Photoshop COM helper returned exit code %s: %s", process.returncode, process.stderr.strip())
