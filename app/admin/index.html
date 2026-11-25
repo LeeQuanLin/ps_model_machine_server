@@ -27,11 +27,10 @@
             <div class="section-title"><h2>准备素材</h2><span class="format-pill">PNG</span></div>
             <label class="field-label" for="template-select">样机模板</label>
             <select id="template-select" required><option value="">请选择样机</option></select>
-            <label class="field-label" for="layer">替换图层</label>
-            <div class="layer-picker">
-              <select id="layer" aria-describedby="layer-note" required disabled><option value="">请先选择样机</option></select>
-              <div class="layer-preview" id="layer-preview"><span>选中后预览</span></div>
-            </div>
+            <fieldset class="layer-picker" aria-describedby="layer-note">
+              <legend class="field-label">替换图层</legend>
+              <div class="layer-list" id="layer-list"><p class="layer-empty">请先选择样机</p></div>
+            </fieldset>
             <p class="field-note" id="layer-note" aria-live="polite" hidden></p>
             <label class="field-label" for="artwork-input">印花图片</label>
             <label class="drop-zone" id="drop-zone" for="artwork-input">

@@ -1,7 +1,8 @@
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from struct import unpack
 from typing import BinaryIO, Iterator
 
+from app.services.layer_thumbnails import read_layer_thumbnail
 
 SMART_OBJECT_TAGS = {b"SoLd", b"SoLE", b"PlLd", b"plLd"}
 PSB_LONG_TAGS = {
@@ -18,6 +19,8 @@ class ReplacementLayer:
     name: str
     path: str
     bounds: tuple[Bounds, ...] = ()
+    source_layer_id: int | None = None
+    thumbnail: bytes | None = None
 
 
 @dataclass(frozen=True)
@@ -30,6 +33,8 @@ class LayerRecord:
     smart: bool
     source: str | None
     bounds: Bounds | None = None
+    pixel_size: tuple[int, int] = (0, 0)
+    channels: tuple[tuple[int, int], ...] = ()
 
 
 def layer_bounds(stream: BinaryIO, end: int, bounds: Bounds) -> Bounds | None:
@@ -87,7 +92,9 @@ def read_records(stream: BinaryIO, end: int, version: int) -> list[LayerRecord]:
     records = []
     for _ in range(count):
         bounds = unpack(">4i", stream.read(16))
-        stream.seek(read_int(stream, 2) * (10 if version == 2 else 6), 1)
+        channel_format = ">hQ" if version == 2 else ">hI"
+        channel_bytes = 10 if version == 2 else 6
+        channels = tuple(unpack(channel_format, stream.read(channel_bytes)) for _ in range(read_int(stream, 2)))
         stream.seek(8, 1)
         opacity, _, flags, _ = unpack(">4B", stream.read(4))
         extra_end = section_end(stream, end)
@@ -123,11 +130,14 @@ def read_records(stream: BinaryIO, end: int, version: int) -> list[LayerRecord]:
         if stream.tell() > extra_end:
             raise ValueError("Photoshop layer record exceeds its bounds")
         stream.seek(extra_end)
-        records.append(LayerRecord(layer_id, name, divider, not (flags & 2), opacity, smart, source, visible_bounds))
+        top, left, bottom, right = bounds
+        records.append(LayerRecord(layer_id, name, divider, not (flags & 2), opacity, smart, source, visible_bounds,
+                                   (right - left, bottom - top), channels))
     return records
 
 
-def read_replacement_layers(stream: BinaryIO, version: int, file_size: int) -> tuple[ReplacementLayer, ...]:
+def read_replacement_layers(stream: BinaryIO, version: int, file_size: int, depth: int = 8,
+                            color_mode: int = 3) -> tuple[ReplacementLayer, ...]:
     stream.seek(26)
     for _ in range(2):
         stream.seek(section_end(stream, file_size))
@@ -143,9 +153,22 @@ def read_replacement_layers(stream: BinaryIO, version: int, file_size: int) -> t
             stream.seek(section_end(stream, end))
             for key, length in tagged_blocks(stream, end, version, 4):
                 if key in (b"Layr", b"Lr16", b"Lr32") and length >= 2:
-                    records = read_records(stream, stream.tell() + length, version)
+                    layer_end = stream.tell() + length
+                    records = read_records(stream, layer_end, version)
                     break
-    return select_replacement_layers(records)
+    options = select_replacement_layers(records)
+    wanted = {layer_id for option in options for layer_id in (option.source_layer_id, option.id)}
+    thumbnails = {}
+    for layer in records:
+        next_layer = stream.tell() + sum(size for _, size in layer.channels)
+        if next_layer > layer_end:
+            break
+        if layer.id in wanted and layer.channels:
+            thumbnails[layer.id] = read_layer_thumbnail(stream, layer.channels, *layer.pixel_size,
+                                                       version, depth, color_mode)
+        stream.seek(next_layer)
+    return tuple(replace(option, thumbnail=thumbnails.get(option.source_layer_id) or thumbnails.get(option.id))
+                 for option in options)
 
 
 def select_replacement_layers(records: list[LayerRecord]) -> tuple[ReplacementLayer, ...]:
@@ -177,5 +200,5 @@ def select_replacement_layers(records: list[LayerRecord]) -> tuple[ReplacementLa
         if shown or copies:
             target_id = layer.id if shown else copies[0].id
             regions = tuple(dict.fromkeys(item.bounds for item in copies or [layer] if item.bounds is not None))
-            options.append(ReplacementLayer(target_id, layer.name, path, regions))
-    return tuple({option.id: option for option in options}.values())
+            options.append(ReplacementLayer(target_id, layer.name, path, regions, source_layer_id=layer.id))
+    return tuple(reversed({option.id: option for option in options}.values()))

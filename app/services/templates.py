@@ -73,14 +73,14 @@ def load_templates(directory: Path) -> dict[str, TemplateRecord]:
 
 def read_template(path: Path, relative_path: Path) -> TemplateRecord:
     with path.open("rb") as stream:
-        signature, version, height, width = unpack(">4sH8xII4x", stream.read(26))
+        signature, version, height, width, depth, color_mode = unpack(">4sH8xIIHH", stream.read(26))
         if signature != b"8BPS" or version != VERSIONS[relative_path.suffix.lower()] or not (width and height):
             raise ValueError("Invalid Photoshop document header")
         size = os.fstat(stream.fileno()).st_size
         if size < (44 if version == 2 else 40):
             raise ValueError("Truncated Photoshop document")
         try:
-            layers = read_replacement_layers(stream, version, size)
+            layers = read_replacement_layers(stream, version, size, depth, color_mode)
         except (OSError, ValueError, StructError) as error:
             logger.warning("Could not read replacement layers in %s: %s", path, error)
             layers = ()

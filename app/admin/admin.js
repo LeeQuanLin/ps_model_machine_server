@@ -119,37 +119,42 @@ function drawProof() {
     const frame = node("div", "proof-image");
     frame.append(empty);
     stage.replaceChildren(frame);
-    const syncLayer = () => drawLayerPreview(template);
-    syncLayer();
     if (template?.thumbnail_url) {
         showImage(frame, template.thumbnail_url, template.filename, undefined, (image) => {
             frame.style.setProperty("--proof-width", `${390 * image.naturalWidth / image.naturalHeight}px`);
-            syncLayer();
+            drawLayerHighlights(template);
+            drawLayerFallbacks(template, image);
         });
     }
 }
 
-function drawLayerPreview(template) {
-    const thumb = $("layer-preview");
+function selectedLayerId() {
+    return $("layer-list").querySelector("input:checked")?.value || "";
+}
+
+function drawLayerHighlights(template) {
     const frame = $("proof-stage").querySelector(".proof-image");
     frame?.querySelectorAll(".proof-region").forEach((region) => region.remove());
-    const layer = template?.replacement_layers?.find((item) => String(item.id) === $("layer").value);
-    const image = frame?.querySelector("img");
-    const regions = layer?.preview_regions || [];
-    if (!image?.naturalWidth || !regions.length) {
-        thumb.replaceChildren(node("span", "", layer ? "暂无预览" : "选中后预览"));
-        return;
-    }
-
-    for (const {left, top, right, bottom} of regions) {
+    if (!frame?.querySelector("img")?.naturalWidth) return;
+    const layer = template?.replacement_layers?.find((item) => String(item.id) === selectedLayerId());
+    for (const {left, top, right, bottom} of layer?.preview_regions || []) {
         const outline = node("span", "proof-region");
         Object.assign(outline.style, {left: `${left * 100}%`, top: `${top * 100}%`,
             width: `${(right - left) * 100}%`, height: `${(bottom - top) * 100}%`});
         outline.setAttribute("aria-hidden", "true");
         frame.append(outline);
     }
+}
 
-    // Crop the same image shown on the right, so the thumbnail uses the current template preview.
+function drawLayerFallbacks(template, image) {
+    for (const layer of template.replacement_layers) {
+        if (layer.thumbnail_url || !layer.preview_regions?.length) continue;
+        const thumb = $("layer-list").querySelector(`[data-layer-thumb="${layer.id}"]`);
+        thumb?.replaceChildren(cropLayerPreview(image, layer.preview_regions));
+    }
+}
+
+function cropLayerPreview(image, regions) {
     const left = Math.min(...regions.map((region) => region.left));
     const top = Math.min(...regions.map((region) => region.top));
     const right = Math.max(...regions.map((region) => region.right));
@@ -157,38 +162,50 @@ function drawLayerPreview(template) {
     const width = (right - left) * image.naturalWidth;
     const height = (bottom - top) * image.naturalHeight;
     const canvas = node("canvas");
-    canvas.width = 224;
-    canvas.height = 140;
-    canvas.setAttribute("role", "img");
-    canvas.setAttribute("aria-label", `${layer.name} 图层区域预览`);
+    canvas.width = 92;
+    canvas.height = 72;
     const scale = Math.min(canvas.width / width, canvas.height / height);
     const drawWidth = width * scale;
     const drawHeight = height * scale;
     canvas.getContext("2d").drawImage(image, left * image.naturalWidth, top * image.naturalHeight, width, height,
         (canvas.width - drawWidth) / 2, (canvas.height - drawHeight) / 2, drawWidth, drawHeight);
-    thumb.replaceChildren(canvas);
+    return canvas;
 }
 
 function updateRenderButton() {
-    $("render-submit").disabled = submittingRender || !$("layer").value;
+    $("render-submit").disabled = submittingRender || !selectedLayerId();
 }
 
 function drawLayers(template) {
-    const select = $("layer");
-    const previous = select.dataset.template === template?.id ? select.value : "";
+    const list = $("layer-list");
+    const previous = list.dataset.template === template?.id ? selectedLayerId() : "";
     const layers = template?.replacement_layers || [];
-    const placeholder = !template ? "请先选择样机" : layers.length ? "请选择要替换的图层" : "暂无可替换图层";
-    select.replaceChildren(new Option(placeholder, ""));
+    list.replaceChildren();
+    list.dataset.template = template?.id || "";
+    if (!layers.length) list.append(node("p", "layer-empty", template ? "暂无可替换图层" : "请先选择样机"));
     for (const layer of layers) {
         const path = layer.path.replace(/^.*?贴图区 \/ /, "");
-        const label = layers.some((other) => other.id !== layer.id && other.path === layer.path)
-            ? `${path}（ID ${layer.id}）` : path;
-        select.add(new Option(label, layer.id));
+        const label = node("label", "layer-choice");
+        const radio = node("input");
+        radio.type = "radio";
+        radio.name = "layer";
+        radio.value = String(layer.id);
+        radio.checked = layers.length === 1 || radio.value === previous;
+        const row = node("span", "layer-row");
+        const thumb = node("span", "layer-thumb", "▧");
+        thumb.dataset.layerThumb = layer.id;
+        thumb.setAttribute("aria-hidden", "true");
+        const duplicate = layers.some((other) => other.id !== layer.id && other.path === layer.path);
+        const title = node("span", "layer-row-name", duplicate ? `${layer.name}（ID ${layer.id}）` : layer.name);
+        title.title = path;
+        if (path !== layer.name) title.append(node("small", "layer-row-path", path));
+        const selected = node("span", "layer-selected", "✓");
+        selected.setAttribute("aria-hidden", "true");
+        row.append(thumb, title, selected);
+        label.append(radio, row);
+        list.append(label);
+        if (layer.thumbnail_url) showImage(thumb, layer.thumbnail_url, "", "▧");
     }
-    select.dataset.template = template?.id || "";
-    select.disabled = layers.length === 0;
-    select.value = layers.some((layer) => String(layer.id) === previous) ? previous
-        : layers.length === 1 ? String(layers[0].id) : "";
     const note = $("layer-note");
     note.hidden = !template || layers.length > 0;
     note.textContent = note.hidden ? "" : "请在样机的「贴图区」组内放置可替换的智能对象，再刷新样机目录。";
@@ -359,9 +376,9 @@ for (const button of document.querySelectorAll("[data-close]")) {
     button.addEventListener("click", () => $(button.dataset.close).close());
 }
 $("template-select").addEventListener("change", drawProof);
-$("layer").addEventListener("change", () => {
+$("layer-list").addEventListener("change", () => {
     updateRenderButton();
-    drawLayerPreview(templates.find((item) => item.id === $("template-select").value));
+    drawLayerHighlights(templates.find((item) => item.id === $("template-select").value));
 });
 $("template-search").addEventListener("input", drawTemplates);
 $("render-filter").addEventListener("change", drawRenders);
@@ -380,9 +397,10 @@ dropZone.addEventListener("drop", (event) => {
 $("render-form").addEventListener("submit", (event) => {
     event.preventDefault();
     handle(async () => {
-        if (!requireConnection() || !artwork || !$("layer").value || submittingRender) return;
+        const layerId = selectedLayerId();
+        if (!requireConnection() || !artwork || !layerId || submittingRender) return;
         const button = $("render-submit");
-        const params = {template_id: $("template-select").value, filename: artwork.name, layer_id: $("layer").value};
+        const params = {template_id: $("template-select").value, filename: artwork.name, layer_id: layerId};
         submittingRender = true;
         updateRenderButton();
         button.textContent = "正在提交…";

@@ -21,7 +21,7 @@ def list_templates(request: Request) -> list[TemplateSummary]:
     return [summary(request, template) for template in request.app.state.templates.values()]
 
 
-def summarize_layer(layer: ReplacementLayer, template: TemplateRecord) -> ReplacementLayerSummary:
+def summarize_layer(layer: ReplacementLayer, template: TemplateRecord, request: Request) -> ReplacementLayerSummary:
     regions = []
     for top, left, bottom, right in layer.bounds:
         top, left = max(0, top), max(0, left)
@@ -29,7 +29,10 @@ def summarize_layer(layer: ReplacementLayer, template: TemplateRecord) -> Replac
         if top < bottom and left < right:
             regions.append(LayerPreviewRegion(left=left / template.width, top=top / template.height,
                                               right=right / template.width, bottom=bottom / template.height))
-    return ReplacementLayerSummary(id=layer.id, name=layer.name, path=layer.path, preview_regions=regions)
+    thumbnail_url = (request.url_for("get_layer_thumbnail", template_id=template.id, layer_id=layer.id).path
+                     if layer.thumbnail is not None else None)
+    return ReplacementLayerSummary(id=layer.id, name=layer.name, path=layer.path, preview_regions=regions,
+                                   thumbnail_url=thumbnail_url)
 
 
 def summary(request: Request, template: TemplateRecord) -> TemplateSummary:
@@ -44,7 +47,7 @@ def summary(request: Request, template: TemplateRecord) -> TemplateSummary:
         thumbnail_url=(request.url_for("get_template_thumbnail", template_id=template.id).path
                        if template.thumbnail is not None else None),
         thumbnail_pending=template.thumbnail_pending,
-        replacement_layers=[summarize_layer(layer, template) for layer in template.replacement_layers],
+        replacement_layers=[summarize_layer(layer, template, request) for layer in template.replacement_layers],
     )
 
 
@@ -116,3 +119,14 @@ def get_template_thumbnail(template_id: str, request: Request) -> Response:
     if template is None or template.thumbnail is None:
         raise HTTPException(404, "Thumbnail not found.")
     return Response(content=template.thumbnail, media_type=template.thumbnail_media_type)
+
+
+@router.get("/{template_id}/layers/{layer_id}/thumbnail", response_class=Response,
+            responses={200: {"content": {"image/png": {}}}, 404: {"description": "Layer thumbnail not found"}})
+def get_layer_thumbnail(template_id: str, layer_id: int, request: Request) -> Response:
+    template = request.app.state.templates.get(template_id)
+    if template is not None:
+        layer = next((item for item in template.replacement_layers if item.id == layer_id), None)
+        if layer is not None and layer.thumbnail is not None:
+            return Response(content=layer.thumbnail, media_type="image/png")
+    raise HTTPException(404, "图层缩略图不存在。")

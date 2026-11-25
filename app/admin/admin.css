@@ -356,34 +356,113 @@ main {
 }
 
 .layer-picker {
-    display:grid;
-    grid-template-columns:minmax(0,1fr) auto;
-    align-items:center;
-    gap:10px;
-    margin-bottom:17px;
+    min-width:0;
+    padding:0;
+    border:0;
+    margin:0 0 17px;
 }
 
-.layer-picker select {
-    margin-bottom:0;
-}
-
-.layer-preview {
-    display:grid;
-    place-items:center;
-    width:112px;
-    height:70px;
+.layer-list {
+    max-height:268px;
+    overflow:auto;
     border:1px solid var(--line);
     border-radius:8px;
+    background:#fdfcfe;
+}
+
+.layer-empty {
+    margin:0;
+    padding:13px 12px;
+    color:var(--muted);
+    font-size:13px;
+}
+
+.layer-choice {
+    display:block;
+    position:relative;
+    cursor:pointer;
+}
+
+.layer-choice + .layer-choice {
+    border-top:1px solid var(--line);
+}
+
+.layer-choice input {
+    position:absolute;
+    width:1px;
+    height:1px;
+    opacity:0;
+}
+
+.layer-row {
+    display:grid;
+    grid-template-columns:46px minmax(0,1fr) 18px;
+    align-items:center;
+    gap:10px;
+    min-height:52px;
+    padding:6px 10px;
+    border-left:2px solid transparent;
+}
+
+.layer-choice:hover .layer-row {
+    background:#f6f2fc;
+}
+
+.layer-choice input:checked + .layer-row {
+    border-left-color:var(--accent);
+    background:var(--accent-wash);
+    color:var(--accent-strong);
+}
+
+.layer-choice input:focus-visible + .layer-row {
+    outline:2px solid var(--accent);
+    outline-offset:-2px;
+}
+
+.layer-row-name {
     overflow:hidden;
-    background:#f0eef5;
+    white-space:nowrap;
+    text-overflow:ellipsis;
+    font-weight:650;
+}
+
+.layer-row-path {
+    display:block;
+    margin-top:2px;
+    overflow:hidden;
+    text-overflow:ellipsis;
     color:var(--muted);
     font-size:11px;
 }
 
-.layer-preview canvas {
+.layer-thumb {
+    display:grid;
+    place-items:center;
+    overflow:hidden;
+    width:46px;
+    height:36px;
+    border:1px solid var(--line);
+    border-radius:4px;
+    color:var(--muted);
+    background:repeating-conic-gradient(#f8f6fa 0% 25%,#ece8f1 0% 50%) 0 0 / 10px 10px;
+}
+
+.layer-thumb img,.layer-thumb canvas {
     display:block;
     width:100%;
     height:100%;
+    min-height:0;
+    object-fit:contain;
+}
+
+.layer-selected {
+    visibility:hidden;
+    text-align:center;
+    font-size:14px;
+}
+
+.layer-choice input:checked + .layer-row .layer-selected {
+    visibility:visible;
 }
 
 .field-note,.preview-status {

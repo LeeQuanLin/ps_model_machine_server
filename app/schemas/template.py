@@ -13,6 +13,7 @@ class ReplacementLayerSummary(BaseModel):
     name: str
     path: str
     preview_regions: list[LayerPreviewRegion] = Field(default_factory=list)
+    thumbnail_url: str | None = None
 
 
 class TemplateSummary(BaseModel):
