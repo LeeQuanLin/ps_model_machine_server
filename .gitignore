@@ -7,4 +7,6 @@ __pycache__/
 !/templates/.gitkeep
 *.[pP][sS][dD]
 *.[pP][sS][bB]
+*.[pP][sS][dD].mockup.json
+*.[pP][sS][bB].mockup.json
 /.codex/

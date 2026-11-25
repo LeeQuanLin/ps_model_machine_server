@@ -27,11 +27,7 @@
             <div class="section-title"><h2>准备素材</h2><span class="format-pill">PNG</span></div>
             <label class="field-label" for="template-select">样机模板</label>
             <select id="template-select" required><option value="">请选择样机</option></select>
-            <fieldset class="layer-picker" aria-describedby="layer-note">
-              <legend class="field-label">替换图层</legend>
-              <div class="layer-list" id="layer-list"><p class="layer-empty">请先选择样机</p></div>
-            </fieldset>
-            <p class="field-note" id="layer-note" aria-live="polite" hidden></p>
+            <p class="slot-selection" id="slot-selection" aria-live="polite"></p>
             <label class="field-label" for="artwork-input">印花图片</label>
             <label class="drop-zone" id="drop-zone" for="artwork-input">
               <input id="artwork-input" type="file" accept="image/png,image/jpeg" required>
@@ -43,7 +39,7 @@
             <div class="section-title"><h2 id="proof-title">样机预览</h2><span class="proof-size" id="preview-size"></span></div>
             <div class="proof-stage" id="proof-stage"><div class="empty-proof"><span aria-hidden="true">▧</span>选择一个样机以预览</div></div>
             <div class="proof-caption"><span id="preview-name">暂未选择样机</span><a href="#templates">管理样机 <span aria-hidden="true">↗</span></a></div>
-            <p class="preview-status" id="preview-status" role="status" hidden>正在生成高清缩略图…</p>
+            <p class="preview-status" id="preview-status" role="status" hidden></p>
           </section>
         </div>
       </section>
@@ -71,6 +67,28 @@
   </dialog>
   <dialog id="preview-dialog" class="dialog preview-dialog" aria-labelledby="dialog-title">
     <div class="dialog-body"><div class="section-title"><h2 id="dialog-title">预览生成图</h2><button type="button" class="icon-button" data-close="preview-dialog" aria-label="关闭">×</button></div><div class="dialog-preview" id="dialog-preview"></div></div>
+  </dialog>
+  <dialog id="configuration-dialog" class="dialog configuration-dialog" aria-labelledby="configuration-title">
+    <div class="dialog-body">
+      <div class="section-title"><h2 id="configuration-title">配置样机</h2><button type="button" class="icon-button" data-close="configuration-dialog" aria-label="关闭">×</button></div>
+      <p id="configuration-template"></p>
+      <p id="configuration-message" role="status" aria-live="polite"></p>
+      <div id="configuration-flow" hidden>
+        <ol id="configuration-steps" class="configuration-steps" aria-label="配置步骤"></ol>
+        <div class="configuration-workspace">
+          <div class="configuration-proof" id="configuration-proof"></div>
+          <fieldset class="layer-picker">
+            <legend id="configuration-layer-label" class="field-label">选择图层</legend>
+            <div class="layer-list" id="configuration-layers"></div>
+          </fieldset>
+        </div>
+        <div class="actions configuration-actions">
+          <button class="button secondary" id="configuration-back" type="button">上一步</button>
+          <button class="button secondary" id="configuration-skip" type="button">跳过</button>
+          <button class="button primary" id="configuration-next" type="button">下一步</button>
+        </div>
+      </div>
+    </div>
   </dialog>
   <dialog id="confirm-dialog" class="dialog" aria-labelledby="confirm-title">
     <form method="dialog" class="dialog-body"><h2 id="confirm-title">删除</h2><p id="confirm-message"></p><div class="actions"><button class="button secondary" value="cancel" autofocus>取消</button><button class="button danger" value="delete">删除</button></div></form>

@@ -31,7 +31,7 @@ async def create_render(request: Request, template_id: str, filename: str = Quer
     if layer_id is not None:
         if selector:
             raise HTTPException(422, "请选择一种图层指定方式。")
-        if not any(option.id == layer_id for option in template.replacement_layers):
+        if not any(option.id == layer_id for option in template.available_layers):
             raise HTTPException(422, "该图层不在此样机的可替换图层中，请刷新样机目录。")
         layer_selector = layer_id
     else:

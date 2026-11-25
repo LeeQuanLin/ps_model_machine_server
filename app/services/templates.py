@@ -1,3 +1,4 @@
+import json
 import logging
 import os
 from dataclasses import dataclass
@@ -9,6 +10,7 @@ from typing import BinaryIO
 
 from PIL import Image
 
+from app.schemas.template import TemplateSlots
 from app.services.template_layers import ReplacementLayer, read_replacement_layers
 
 logger = logging.getLogger(__name__)
@@ -30,6 +32,43 @@ class TemplateRecord:
     replacement_layers: tuple[ReplacementLayer, ...] = ()
     thumbnail_media_type: str = "image/jpeg"
     thumbnail_pending: bool = False
+    revision: str = ""
+    slots: TemplateSlots | None = None
+    configured_layers: tuple[ReplacementLayer, ...] = ()
+
+    @property
+    def available_layers(self) -> tuple[ReplacementLayer, ...]:
+        layers = {layer.id: layer for layer in self.replacement_layers}
+        layers.update((layer.id, layer) for layer in self.configured_layers)
+        return tuple(layers.values())
+
+
+def template_revision(stat: os.stat_result) -> str:
+    return f"{stat.st_size}:{stat.st_mtime_ns}"
+
+
+def configuration_path(path: Path) -> Path:
+    return path.with_name(path.name + ".mockup.json")
+
+
+def read_configuration(path: Path, revision: str) -> tuple[TemplateSlots | None, tuple[ReplacementLayer, ...]]:
+    config = configuration_path(path)
+    try:
+        if config.is_symlink():
+            return None, ()
+        with config.open(encoding="utf-8") as stream:
+            saved = json.load(stream)
+        if saved["revision"] == revision:
+            slots = TemplateSlots.model_validate(saved["slots"])
+            layers = tuple(ReplacementLayer(item["id"], item["name"], item["path"],
+                                            tuple(tuple(bounds) for bounds in item["bounds"]))
+                           for item in saved["layers"])
+            return slots, layers
+    except FileNotFoundError:
+        pass
+    except (OSError, ValueError, TypeError, KeyError) as error:
+        logger.warning("Could not read template configuration for %s: %s", path, error)
+    return None, ()
 
 
 def read_sidecar(template: Path) -> tuple[bytes, str] | None:
@@ -76,7 +115,8 @@ def read_template(path: Path, relative_path: Path) -> TemplateRecord:
         signature, version, height, width, depth, color_mode = unpack(">4sH8xIIHH", stream.read(26))
         if signature != b"8BPS" or version != VERSIONS[relative_path.suffix.lower()] or not (width and height):
             raise ValueError("Invalid Photoshop document header")
-        size = os.fstat(stream.fileno()).st_size
+        stat = os.fstat(stream.fileno())
+        size = stat.st_size
         if size < (44 if version == 2 else 40):
             raise ValueError("Truncated Photoshop document")
         try:
@@ -92,8 +132,12 @@ def read_template(path: Path, relative_path: Path) -> TemplateRecord:
         else:
             thumbnail, media_type = sidecar
     identifier = sha256(relative_path.as_posix().encode("utf-8")).hexdigest()
+    revision = template_revision(stat)
+    slots, configured_layers = read_configuration(path, revision)
+    originals = {layer.id: layer for layer in layers}
+    configured_layers = tuple(originals.get(layer.id, layer) for layer in configured_layers)
     return TemplateRecord(identifier, relative_path, width, height, size, thumbnail, layers,
-                          media_type, thumbnail_pending=sidecar is None)
+                          media_type, revision=revision, slots=slots, configured_layers=configured_layers)
 
 
 def read_thumbnail(stream: BinaryIO, version: int, size: int, path: Path) -> bytes | None:

@@ -12,7 +12,6 @@ from app.api.routes.templates import router as templates_router
 from app.core.config import PROJECT_ROOT, load_settings
 from app.services.photoshop import PhotoshopControlError, PhotoshopService
 from app.services.renders import RenderService
-from app.services.template_previews import queue_template_previews
 from app.services.templates import load_templates
 
 
@@ -28,9 +27,8 @@ async def lifespan(app: FastAPI):
     app.state.template_lock = Lock()
     app.state.renders = RenderService(PROJECT_ROOT / "data" / "renders", settings.template_dir,
                                       app.state.template_lock, app.state.photoshop)
-    app.state.preview_jobs = set()
+    app.state.template_inspections = {}
     try:
-        queue_template_previews(app.state)
         yield
     finally:
         app.state.renders.close()
