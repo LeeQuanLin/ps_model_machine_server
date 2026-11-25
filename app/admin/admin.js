@@ -1,10 +1,27 @@
 const $ = (id) => document.getElementById(id);
 const pageNames = {create: "生成样机", templates: "样机管理", renders: "生成图"};
-const slots = [
-    {key: "a_side", label: "A 面"},
-    {key: "b_side", label: "B 面"},
-    {key: "pillowcase", label: "枕套"},
-    {key: "background", label: "背景"},
+const previewModels = JSON.parse($("preview-models").textContent);
+const viewerURL = document.currentScript.dataset.viewer;
+const proofParts = [
+    {
+        key: "background", bounds: [0, 0, 440, 456], label: [58, 36], color: "#e8e3f4",
+        outline: "M18 0H422Q440 0 440 18V438Q440 456 422 456H18Q0 456 0 438V18Q0 0 18 0Z",
+    },
+    {
+        key: "pillowcase", bounds: [126, 49, 188, 88], label: [220, 93], color: "#f7f0ec",
+        outline: "M140 56Q220 43 300 56Q314 59 311 73L306 92L311 111Q313 126 297 129Q220 141 143 129Q127 126 129 111L134 92L129 73Q126 59 140 56Z",
+        stitch: "M146 64Q220 53 294 64Q302 65 301 75L297 92L301 110Q303 119 293 121Q220 132 147 121Q137 119 139 110L143 92L139 75Q138 65 146 64Z",
+    },
+    {
+        key: "a_side", bounds: [76, 199, 288, 219], label: [220, 313], color: "#c8bae9",
+        outline: "M105 200H335L362 389Q365 406 349 411Q220 424 91 411Q75 406 78 389Z",
+        stitch: "M111 229L89 387Q87 399 100 401Q220 412 340 401Q353 399 351 387L329 229",
+    },
+    {
+        key: "b_side", bounds: [92, 150, 256, 80], label: [220, 190], color: "#a7b6dc",
+        outline: "M112 155Q220 147 328 155Q338 155 340 165L347 209Q349 219 338 221Q220 236 102 221Q91 219 93 209L100 165Q102 155 112 155Z",
+        stitch: "M103 207Q220 221 337 207",
+    },
 ];
 const statusNames = {queued: "排队中", running: "生成中", completed: "已完成", failed: "失败"};
 let token = sessionStorage.getItem("mockup.token") || "";
@@ -13,7 +30,7 @@ let renders = [];
 let artwork = null;
 let artworkPreview = null;
 let selectedSlot = null;
-let proofThumbnail = null;
+let previewViewer = null;
 let configuration = null;
 let activePage = "create";
 let refreshingRenders = false;
@@ -131,8 +148,25 @@ function svgNode(tag, attributes = {}) {
 
 function templateSlots(template) {
     const layers = template?.replacement_layers || [];
-    return slots.map((slot) => ({...slot, layer: layers.find((layer) => layer.id === template?.slots?.[slot.key])}))
+    return previewModel(template).parts
+        .map((slot) => ({...slot, layer: layers.find((layer) => layer.id === template?.slots?.[slot.key])}))
         .filter((slot) => slot.layer);
+}
+
+function previewModel(template) {
+    return previewModels[template?.preview_model] || previewModels.bedding;
+}
+
+function selectProofSlot(key) {
+    selectedSlot = key;
+    updateProofSelection();
+    if (selectedLayerId()) $("artwork-input").click();
+}
+
+function clearProofViewer() {
+    previewViewer?.dispose();
+    previewViewer = null;
+    $("proof-stage").replaceChildren();
 }
 
 function drawProof() {
@@ -145,104 +179,128 @@ function drawProof() {
     if (!choices.some((slot) => slot.key === selectedSlot)) selectedSlot = choices.length === 1 ? choices[0].key : null;
     $("preview-name").textContent = template?.relative_path || "暂未选择样机";
     $("preview-size").textContent = template ? dimensions(template) : "";
-    if (proofThumbnail) URL.revokeObjectURL(proofThumbnail);
-    proofThumbnail = null;
+    const toolbar = $("preview-parts");
+    toolbar.replaceChildren();
+    toolbar.hidden = !template;
+    clearProofViewer();
     if (!template) {
         stage.replaceChildren(node("div", "empty-proof", "选择一个样机以预览"));
         updateProofSelection();
         return;
     }
-    const frame = svgNode("svg", {class: "proof-image", viewBox: `0 0 ${template.width} ${template.height}`,
-        role: "group", "aria-label": "样机替换区域"});
-    frame.style.setProperty("--proof-width", `${430 * template.width / template.height}px`);
-    const base = svgNode("image", {width: template.width, height: template.height, preserveAspectRatio: "none"});
-    const regions = svgNode("g", {class: "proof-regions"});
-    frame.append(base, regions);
-    stage.replaceChildren(frame);
-    drawProofRegions(template, choices, regions);
-    if (template.thumbnail_url) handle(async () => {
-        const blob = await (await api(template.thumbnail_url)).blob();
-        if (!base.isConnected) return;
-        proofThumbnail = URL.createObjectURL(blob);
-        base.setAttribute("href", proofThumbnail);
-    });
+    const model = previewModel(template);
+    for (const part of model.parts) {
+        const configured = choices.some(({key}) => key === part.key);
+        const button = action(part.label, () => selectProofSlot(part.key),
+            configured ? "preview-part" : "preview-part is-unconfigured");
+        button.dataset.slot = part.key;
+        button.setAttribute("aria-label", configured ? `为${part.label}选择图片` : `${part.label}尚未绑定图层`);
+        toolbar.append(button);
+    }
+    const host = node("div", "proof-canvas");
+    host.append(node("span", "empty-proof", "正在加载 3D 预览…"));
+    stage.replaceChildren(host);
+    updateProofSelection();
+    const fallback = (error) => {
+        if (!host.isConnected) return;
+        console.warn("3D preview failed", error);
+        previewViewer?.dispose();
+        previewViewer = null;
+        drawProofFallback(stage, model, choices);
+    };
+    const startViewer = (preferCanvas = false) => import(viewerURL).then(({loadPreview3D}) => {
+        if (!host.isConnected) return;
+        return loadPreview3D(host, model, selectProofSlot, () => {
+            if (!host.isConnected) return;
+            previewViewer?.dispose();
+            previewViewer = null;
+            startViewer(true);
+        }, preferCanvas);
+    }).then((viewer) => {
+        if (!viewer) return;
+        if (!host.isConnected) { viewer.dispose(); return; }
+        previewViewer = viewer;
+        host.dataset.renderer = viewer.mode;
+        host.append(node("span", "preview-orbit-hint", "拖动旋转 · 滚轮缩放"));
+        updateProofSelection();
+    }).catch(fallback);
+    startViewer();
 }
 
-function drawProofRegions(template, choices, container) {
-    const hitAreas = [];
-    const labels = [];
-    const labelPositions = [];
-    for (const slot of choices) {
-        const regions = slot.layer.preview_regions.map((region) => ({
-            x: region.left * template.width, y: region.top * template.height,
-            width: (region.right - region.left) * template.width,
-            height: (region.bottom - region.top) * template.height,
-        })).sort((a, b) => b.width * b.height - a.width * a.height);
-        const fontSize = Math.min(template.width, template.height) * .038;
-        const activate = () => {
-            selectedSlot = slot.key;
-            updateProofSelection();
-            $("artwork-input").click();
-        };
-        for (const region of regions) {
-            const tile = svgNode("svg", {...region, class: "proof-tile", "data-slot": slot.key});
-            const image = svgNode("image", {width: "100%", height: "100%", preserveAspectRatio: "xMidYMid slice"});
-            const target = svgNode("rect", {width: "100%", height: "100%", class: "proof-hit"});
-            tile.append(image, target);
-            target.addEventListener("click", activate);
-            hitAreas.push({tile, area: region.width * region.height});
-        }
-        if (!regions.length) continue;
-        const first = regions[0];
-        const labelWidth = fontSize * 3.2;
-        const labelHeight = fontSize * 1.65;
-        const x = Math.min(template.width - labelWidth, first.x + fontSize * .3);
-        const maxY = template.height - labelHeight;
-        let y = Math.min(maxY, first.y + fontSize * .3);
-        for (const position of labelPositions) {
-            if (Math.abs(position.x - x) < labelWidth && Math.abs(position.y - y) < labelHeight) {
-                y = y + labelHeight + fontSize * .12 <= maxY ? y + labelHeight + fontSize * .12
-                    : Math.max(0, y - labelHeight - fontSize * .12);
-            }
-        }
-        labelPositions.push({x, y});
-        const label = svgNode("g", {transform: `translate(${x} ${y})`, class: "proof-label", role: "button",
-            tabindex: "0", "aria-label": `为${slot.label}选择图片`, "data-slot": slot.key});
-        const background = svgNode("rect", {width: labelWidth, height: labelHeight, rx: labelHeight * .29});
-        const text = svgNode("text", {x: labelWidth / 2, y: labelHeight / 2, "font-size": fontSize, dy: ".35em"});
+function drawProofFallback(stage, model, choices) {
+    const frame = svgNode("svg", {class: "proof-image", viewBox: "0 0 440 456",
+        role: "group", "aria-label": `${model.label}替换部位示意图`});
+    stage.replaceChildren(frame, node("span", "preview-orbit-hint", "3D 加载失败，已切换示意图"));
+    drawProofRegions(frame, model, choices);
+    updateProofSelection();
+}
+
+function drawProofRegions(frame, model, choices) {
+    const definitions = svgNode("defs");
+    frame.append(definitions);
+    const isPillow = model === previewModels.pillowcase;
+    const parts = isPillow ? model.parts.map(({key}, index) => ({
+        ...proofParts.find((part) => part.key === "pillowcase"), key,
+        transform: `translate(-88 ${index ? 157 : 12}) scale(1.4)`,
+    })) : proofParts;
+    for (const part of parts) {
+        const slot = model.parts.find(({key}) => key === part.key);
+        if (!slot) continue;
+        const configured = choices.some(({key}) => key === slot.key);
+        const shape = svgNode("g", {class: configured ? "proof-part" : "proof-part is-unconfigured",
+            "data-slot": slot.key, role: "button", tabindex: "0",
+            "aria-label": configured ? `为${slot.label}选择图片` : `${slot.label}尚未绑定图层`});
+        if (part.transform) shape.setAttribute("transform", part.transform);
+        shape.append(svgNode("path", {class: "proof-surface", d: part.outline, fill: part.color}));
+        frame.append(shape);
+        const clipId = `proof-clip-${part.key}`;
+        const clip = svgNode("clipPath", {id: clipId});
+        clip.append(svgNode("path", {d: part.outline}));
+        definitions.append(clip);
+        const [x, y, width, height] = part.bounds;
+        shape.append(svgNode("image", {x, y, width, height, class: "proof-artwork",
+            preserveAspectRatio: "xMidYMid slice", "clip-path": `url(#${clipId})`}));
+        if (part.stitch) shape.append(svgNode("path", {class: "proof-stitch", d: part.stitch}));
+
+        shape.append(svgNode("path", {class: "proof-hit", d: part.outline}));
+        const [labelX, labelY] = part.label;
+        const label = svgNode("g", {class: "proof-label", transform: `translate(${labelX} ${labelY})`,
+            "aria-hidden": "true"});
+        const badge = svgNode("rect", {x: -43, y: -14, width: 86, height: 28, rx: 8});
+        const text = svgNode("text", {x: 0, y: 0, dy: ".35em"});
         text.textContent = slot.label;
-        label.append(background, text);
-        label.addEventListener("click", activate);
-        label.addEventListener("keydown", (event) => {
+        label.append(badge, text);
+        shape.append(label);
+        const activate = () => selectProofSlot(slot.key);
+        shape.addEventListener("click", activate);
+        shape.addEventListener("keydown", (event) => {
             if (event.key !== "Enter" && event.key !== " ") return;
             event.preventDefault();
             activate();
         });
-        labels.push(label);
     }
-    hitAreas.sort((a, b) => b.area - a.area);
-    container.append(...hitAreas.map(({tile}) => tile), ...labels);
-    updateProofSelection();
 }
 
 function updateProofSelection() {
     const template = selectedTemplate();
     const choices = templateSlots(template);
-    const slot = choices.find((choice) => choice.key === selectedSlot);
-    const proof = $("proof-stage");
-    for (const item of proof.querySelectorAll("[data-slot]")) {
+    const slot = previewModel(template).parts.find(({key}) => key === selectedSlot);
+    const layerId = choices.find(({key}) => key === selectedSlot)?.layer.id;
+    for (const item of document.querySelectorAll("#proof-stage [data-slot], #preview-parts [data-slot]")) {
         const selected = item.dataset.slot === selectedSlot;
         item.classList.toggle("is-selected", selected);
-        if (item.matches(".proof-label")) item.setAttribute("aria-pressed", String(selected));
+        item.setAttribute("aria-pressed", String(selected));
         const image = item.querySelector("image");
-        if (image) {
-            if (selected && artworkPreview?.naturalWidth) image.setAttribute("href", artworkPreview.src);
-            else image.removeAttribute("href");
-        }
+        if (!image) continue;
+        if (selected && layerId && artworkPreview?.naturalWidth) image.setAttribute("href", artworkPreview.src);
+        else image.removeAttribute("href");
     }
-    $("slot-selection").textContent = slot ? `替换部位 · ${slot.label}` : "请在样机预览上点选替换部位";
+    previewViewer?.show(layerId ? selectedSlot : null, artworkPreview?.naturalWidth ? artworkPreview : null);
+    $("slot-selection").textContent = slot ? (layerId ? `替换部位 · ${slot.label}` : `${slot.label}尚未绑定图层`)
+        : "请点选要替换的部位";
     const status = $("preview-status");
-    if (template && !template.slots) status.textContent = "请先在样机管理中配置替换部位。";
+    if (slot && !layerId) status.textContent = `请在样机管理中为「${slot.label}」绑定图层。`;
+    else if (template && !template.slots) status.textContent = "请先在样机管理中配置替换部位。";
     else if (template && !choices.length) status.textContent = "配置中没有启用替换部位。";
     else if (artworkPreview?.complete && !artworkPreview.naturalWidth) status.textContent = "无法预览这张图片。";
     else if (slot && artworkPreview?.naturalWidth) status.textContent = "贴图位置预览，效果以生成图为准。";
@@ -252,7 +310,7 @@ function updateProofSelection() {
 }
 
 function selectedLayerId() {
-    return selectedTemplate()?.slots?.[selectedSlot] || "";
+    return templateSlots(selectedTemplate()).find(({key}) => key === selectedSlot)?.layer.id || "";
 }
 
 function updateRenderButton() {
@@ -285,7 +343,8 @@ function drawTemplates() {
         }), "text-button delete-button"));
         info.append(node("div", "asset-name", template.relative_path),
             node("div", "asset-meta", `${dimensions(template)}　${formatBytes(template.size_bytes)}`),
-            node("div", "asset-meta", template.slots ? `已配置 · ${templateSlots(template).length} 个部位` : "待配置"), controls);
+            node("div", "asset-meta", template.slots
+                ? `${previewModel(template).label} · ${templateSlots(template).length} 个部位` : "待配置"), controls);
         card.append(image, info);
         grid.append(card);
         showImage(image, template.thumbnail_url, template.filename);
@@ -304,8 +363,11 @@ async function openConfiguration(template) {
         const inspection = await (await api(`templates/${template.id}/inspect`, {method: "POST"})).json();
         if (configuration !== draft || !dialog.open) return;
         draft.inspection = inspection;
+        draft.previewModel = inspection.preview_model || "bedding";
         const ids = new Set(inspection.layers.map((layer) => layer.id));
-        draft.slots = Object.fromEntries(slots.map(({key}) => [key, ids.has(inspection.slots[key]) ? inspection.slots[key] : null]));
+        draft.slots = Object.fromEntries(Object.entries(inspection.slots).filter(([, id]) => ids.has(id)));
+        $("configuration-model").replaceChildren(...Object.entries(previewModels).map(([key, model]) => new Option(model.label, key)));
+        $("configuration-model").value = draft.previewModel;
         $("configuration-message").textContent = "";
         $("configuration-flow").hidden = false;
         drawConfiguration();
@@ -316,11 +378,12 @@ async function openConfiguration(template) {
 
 function drawConfiguration() {
     const draft = configuration;
-    const slot = slots[draft.step];
+    const parts = previewModels[draft.previewModel].parts;
+    const slot = parts[draft.step];
     const current = draft.slots[slot.key];
     const chosen = draft.inspection.layers.find((layer) => layer.id === current);
     const steps = $("configuration-steps");
-    steps.replaceChildren(...slots.map(({key, label}, index) => {
+    steps.replaceChildren(...parts.map(({key, label}, index) => {
         const step = node("li", draft.slots[key] ? "is-bound" : "", label);
         if (index === draft.step) step.setAttribute("aria-current", "step");
         return step;
@@ -336,7 +399,7 @@ function drawConfiguration() {
         radio.type = "radio";
         radio.value = String(layer.id);
         radio.checked = layer.id === current;
-        radio.disabled = slots.some(({key}) => key !== slot.key && draft.slots[key] === layer.id);
+        radio.disabled = parts.some(({key}) => key !== slot.key && draft.slots[key] === layer.id);
         radio.addEventListener("change", () => {
             draft.slots[slot.key] = layer.id;
             drawConfigurationRegions(layer);
@@ -362,15 +425,15 @@ function drawConfiguration() {
         board.replaceChildren(frame);
         if (draft.inspection.thumbnail_url) showImage(frame, draft.inspection.thumbnail_url, draft.template.filename,
             undefined, () => {
-                const active = slots[draft.step];
+                const active = previewModels[draft.previewModel].parts[draft.step];
                 drawConfigurationRegions(draft.inspection.layers.find(({id}) => id === draft.slots[active.key]));
             });
     }
     drawConfigurationRegions(chosen);
     $("configuration-back").disabled = !draft.step;
     $("configuration-next").disabled = !current;
-    $("configuration-next").textContent = draft.step === slots.length - 1 ? "保存配置" : "下一步";
-    $("configuration-skip").textContent = draft.step === slots.length - 1 ? "跳过并保存" : "跳过";
+    $("configuration-next").textContent = draft.step === parts.length - 1 ? "保存配置" : "下一步";
+    $("configuration-skip").textContent = draft.step === parts.length - 1 ? "跳过并保存" : "跳过";
 }
 
 function drawConfigurationRegions(layer) {
@@ -388,19 +451,21 @@ function drawConfigurationRegions(layer) {
 async function advanceConfiguration(skip) {
     const draft = configuration;
     if (draft.saving) return;
-    if (skip) draft.slots[slots[draft.step].key] = null;
-    if (draft.step < slots.length - 1) {
+    const parts = previewModels[draft.previewModel].parts;
+    if (skip) draft.slots[parts[draft.step].key] = null;
+    if (draft.step < parts.length - 1) {
         draft.step++;
         drawConfiguration();
         return;
     }
     draft.saving = true;
-    const buttons = [$("configuration-next"), $("configuration-skip"), $("configuration-back")];
+    const buttons = [$("configuration-next"), $("configuration-skip"), $("configuration-back"), $("configuration-model")];
     buttons.forEach((button) => { button.disabled = true; });
     $("configuration-message").textContent = "正在保存配置…";
     try {
         const updated = await (await api(`templates/${draft.template.id}/configuration`, {method: "PUT",
-            json: {revision: draft.inspection.revision, slots: draft.slots}})).json();
+            json: {revision: draft.inspection.revision, preview_model: draft.previewModel,
+                slots: Object.fromEntries(parts.map(({key}) => [key, draft.slots[key] ?? null]))}})).json();
         updateTemplates(templates.map((item) => item.id === updated.id ? updated : item));
         if (configuration === draft) $("configuration-dialog").close();
         notify("样机配置已保存");
@@ -410,6 +475,7 @@ async function advanceConfiguration(skip) {
         draft.saving = false;
         if (configuration === draft) {
             $("configuration-skip").disabled = false;
+            $("configuration-model").disabled = false;
             drawConfiguration();
         }
     }
@@ -498,6 +564,7 @@ async function openPage() {
     }
     $("current-page").textContent = pageNames[activePage];
     if (activePage === "create") drawProof();
+    else clearProofViewer();
     if (activePage === "templates") drawTemplates();
     if (activePage === "renders") {
         drawRenders();
@@ -564,6 +631,12 @@ $("configuration-dialog").addEventListener("close", () => {
     $("configuration-proof").dataset.template = "";
     $("configuration-proof").replaceChildren();
     $("configuration-skip").disabled = false;
+    $("configuration-model").disabled = false;
+});
+$("configuration-model").addEventListener("change", (event) => {
+    configuration.previewModel = event.target.value;
+    configuration.step = 0;
+    drawConfiguration();
 });
 $("configuration-back").addEventListener("click", () => {
     configuration.step--;

@@ -1,0 +1,28 @@
+{
+  "bedding": {
+    "label": "床品套件",
+    "asset": "bedding.glb",
+    "parts": [
+      {"key": "a_side", "label": "A 面", "aspect": 1.15},
+      {"key": "b_side", "label": "B 面", "aspect": 4.3},
+      {"key": "pillowcase", "label": "枕套", "aspect": 1.8},
+      {"key": "background", "label": "背景", "aspect": 1}
+    ]
+  },
+  "pillowcase": {
+    "label": "单枕套",
+    "asset": "pillowcase.glb",
+    "parts": [
+      {"key": "pillowcase", "label": "枕套正面", "aspect": 1.6},
+      {"key": "b_side", "label": "枕套背面", "aspect": 1.6, "view": "underside"}
+    ]
+  },
+  "sheet": {
+    "label": "单床单",
+    "asset": "sheet.glb",
+    "parts": [
+      {"key": "a_side", "label": "床单", "aspect": 1},
+      {"key": "background", "label": "背景", "aspect": 1}
+    ]
+  }
+}

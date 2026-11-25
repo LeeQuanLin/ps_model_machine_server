@@ -10,7 +10,8 @@ from typing import BinaryIO
 
 from PIL import Image
 
-from app.schemas.template import TemplateSlots
+from app.core.preview_models import DEFAULT_PREVIEW_MODEL
+from app.schemas.template import TemplateConfiguration, TemplateSlots
 from app.services.template_layers import ReplacementLayer, read_replacement_layers
 
 logger = logging.getLogger(__name__)
@@ -35,6 +36,7 @@ class TemplateRecord:
     revision: str = ""
     slots: TemplateSlots | None = None
     configured_layers: tuple[ReplacementLayer, ...] = ()
+    preview_model: str = DEFAULT_PREVIEW_MODEL
 
     @property
     def available_layers(self) -> tuple[ReplacementLayer, ...]:
@@ -51,7 +53,7 @@ def configuration_path(path: Path) -> Path:
     return path.with_name(path.name + ".mockup.json")
 
 
-def read_configuration(path: Path, revision: str) -> tuple[TemplateSlots | None, tuple[ReplacementLayer, ...]]:
+def read_configuration(path: Path, revision: str) -> tuple[TemplateConfiguration | None, tuple[ReplacementLayer, ...]]:
     config = configuration_path(path)
     try:
         if config.is_symlink():
@@ -59,11 +61,11 @@ def read_configuration(path: Path, revision: str) -> tuple[TemplateSlots | None,
         with config.open(encoding="utf-8") as stream:
             saved = json.load(stream)
         if saved["revision"] == revision:
-            slots = TemplateSlots.model_validate(saved["slots"])
+            settings = TemplateConfiguration.model_validate(saved)
             layers = tuple(ReplacementLayer(item["id"], item["name"], item["path"],
                                             tuple(tuple(bounds) for bounds in item["bounds"]))
                            for item in saved["layers"])
-            return slots, layers
+            return settings, layers
     except FileNotFoundError:
         pass
     except (OSError, ValueError, TypeError, KeyError) as error:
@@ -133,11 +135,13 @@ def read_template(path: Path, relative_path: Path) -> TemplateRecord:
             thumbnail, media_type = sidecar
     identifier = sha256(relative_path.as_posix().encode("utf-8")).hexdigest()
     revision = template_revision(stat)
-    slots, configured_layers = read_configuration(path, revision)
+    configuration, configured_layers = read_configuration(path, revision)
     originals = {layer.id: layer for layer in layers}
     configured_layers = tuple(originals.get(layer.id, layer) for layer in configured_layers)
     return TemplateRecord(identifier, relative_path, width, height, size, thumbnail, layers,
-                          media_type, revision=revision, slots=slots, configured_layers=configured_layers)
+                          media_type, revision=revision, slots=configuration.slots if configuration else None,
+                          configured_layers=configured_layers,
+                          preview_model=configuration.preview_model if configuration else DEFAULT_PREVIEW_MODEL)
 
 
 def read_thumbnail(stream: BinaryIO, version: int, size: int, path: Path) -> bytes | None:

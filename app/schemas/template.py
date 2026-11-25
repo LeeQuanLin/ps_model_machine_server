@@ -1,12 +1,17 @@
 from typing import Annotated
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
+
+from app.core.preview_models import DEFAULT_PREVIEW_MODEL, PREVIEW_MODELS
 
 
 LayerId = Annotated[int, Field(gt=0)]
 
 
 class TemplateSlots(BaseModel):
+    model_config = ConfigDict(extra="allow")
+    __pydantic_extra__: dict[str, LayerId | None] = Field(init=False)
+
     a_side: LayerId | None = None
     b_side: LayerId | None = None
     pillowcase: LayerId | None = None
@@ -31,6 +36,14 @@ class ReplacementLayerSummary(BaseModel):
 class TemplateConfiguration(BaseModel):
     revision: str
     slots: TemplateSlots
+    preview_model: str = DEFAULT_PREVIEW_MODEL
+
+    @field_validator("preview_model")
+    @classmethod
+    def validate_preview_model(cls, value: str) -> str:
+        if value not in PREVIEW_MODELS:
+            raise ValueError("未知的样机预览类型。")
+        return value
 
 
 class TemplateInspection(TemplateConfiguration):
@@ -50,3 +63,4 @@ class TemplateSummary(BaseModel):
     thumbnail_pending: bool = False
     replacement_layers: list[ReplacementLayerSummary]
     slots: TemplateSlots | None = None
+    preview_model: str = DEFAULT_PREVIEW_MODEL

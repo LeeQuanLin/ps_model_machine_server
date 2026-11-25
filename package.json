@@ -1,0 +1,7 @@
+{
+  "name": "ps-model-machine-preview",
+  "private": true,
+  "dependencies": {
+    "three": "0.180.0"
+  }
+}

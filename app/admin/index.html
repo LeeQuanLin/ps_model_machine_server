@@ -5,7 +5,9 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>样机工坊</title>
   <link rel="stylesheet" href="./admin-assets/admin.css">
-  <script src="./admin-assets/admin.js" defer></script>
+  <script type="importmap">__PREVIEW_IMPORTS__</script>
+  <script type="application/json" id="preview-models">__PREVIEW_MODELS__</script>
+  <script src="./admin-assets/admin.js" data-viewer="./admin-assets/preview-3d.js" defer></script>
 </head>
 <body>
   <aside class="sidebar">
@@ -38,6 +40,7 @@
           <section class="proof panel" aria-labelledby="proof-title">
             <div class="section-title"><h2 id="proof-title">样机预览</h2><span class="proof-size" id="preview-size"></span></div>
             <div class="proof-stage" id="proof-stage"><div class="empty-proof"><span aria-hidden="true">▧</span>选择一个样机以预览</div></div>
+            <div class="preview-parts" id="preview-parts" aria-label="可替换部位" hidden></div>
             <div class="proof-caption"><span id="preview-name">暂未选择样机</span><a href="#templates">管理样机 <span aria-hidden="true">↗</span></a></div>
             <p class="preview-status" id="preview-status" role="status" hidden></p>
           </section>
@@ -74,6 +77,8 @@
       <p id="configuration-template"></p>
       <p id="configuration-message" role="status" aria-live="polite"></p>
       <div id="configuration-flow" hidden>
+        <label class="field-label" for="configuration-model">预览类型</label>
+        <select id="configuration-model"></select>
         <ol id="configuration-steps" class="configuration-steps" aria-label="配置步骤"></ol>
         <div class="configuration-workspace">
           <div class="configuration-proof" id="configuration-proof"></div>

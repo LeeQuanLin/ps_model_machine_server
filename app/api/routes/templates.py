@@ -9,6 +9,7 @@ from starlette.concurrency import run_in_threadpool
 
 from app.api.dependencies import authorize
 from app.api.uploads import save_upload, upload_name
+from app.core.preview_models import PREVIEW_MODELS
 from app.schemas.template import (LayerPreviewRegion, ReplacementLayerSummary, TemplateConfiguration,
                                   TemplateInspection, TemplateSlots, TemplateSummary)
 from app.services.template_configuration import check_template_source, inspect_template, save_configuration, write_sidecar
@@ -53,6 +54,7 @@ def summary(request: Request, template: TemplateRecord) -> TemplateSummary:
         thumbnail_pending=template.thumbnail_pending,
         replacement_layers=[summarize_layer(layer, template, request) for layer in template.available_layers],
         slots=template.slots,
+        preview_model=template.preview_model,
     )
 
 
@@ -129,6 +131,7 @@ def inspect_configuration(template_id: str, request: Request) -> TemplateInspect
         candidates = [(layer, item) for layer, item in candidates if item.preview_regions]
         state.template_inspections[template_id] = (inspected.revision, {layer.id: layer for layer, _ in candidates})
     return TemplateInspection(revision=updated.revision, slots=updated.slots or TemplateSlots(),
+                              preview_model=updated.preview_model,
                               layers=[item for _, item in candidates],
                               thumbnail_url=request.url_for("get_template_thumbnail", template_id=template_id).path
                               if updated.thumbnail is not None else None)
@@ -142,10 +145,14 @@ def configure_template(template_id: str, config: TemplateConfiguration, request:
         inspection = state.template_inspections.get(template_id)
         if not inspection or inspection[0] != config.revision or template.revision != config.revision:
             raise HTTPException(409, "请重新读取样机图层后保存配置。")
-        selected = [value for value in config.slots.model_dump().values() if value is not None]
+        active_parts = {part["key"] for part in PREVIEW_MODELS[config.preview_model]["parts"]}
+        bindings = config.slots.model_dump()
+        if any(layer is not None and key not in active_parts for key, layer in bindings.items()):
+            raise HTTPException(422, "当前预览类型不包含所选部位。")
+        selected = [value for value in bindings.values() if value is not None]
         if len(set(selected)) != len(selected) or any(layer not in inspection[1] for layer in selected):
             raise HTTPException(422, "每个部位需选择不同的可替换智能对象图层。")
-        updated = replace(template, slots=config.slots,
+        updated = replace(template, slots=config.slots, preview_model=config.preview_model,
                           configured_layers=tuple(inspection[1][layer] for layer in selected))
         try:
             save_configuration(source, updated)

@@ -1,6 +1,7 @@
 /.env
 /photoshop_control/.env
 /.venv/
+/node_modules/
 __pycache__/
 /data/
 /templates/*

@@ -60,7 +60,7 @@ def inspect_template(source: Path, template: TemplateRecord, photoshop: Photosho
 
 
 def save_configuration(source: Path, template: TemplateRecord) -> None:
-    config = {"revision": template.revision, "slots": template.slots.model_dump(),
+    config = {"revision": template.revision, "slots": template.slots.model_dump(), "preview_model": template.preview_model,
               "layers": [{"id": layer.id, "name": layer.name, "path": layer.path, "bounds": layer.bounds}
                          for layer in template.configured_layers]}
     write_sidecar(configuration_path(source), json.dumps(config, ensure_ascii=False, indent=2).encode("utf-8"))

@@ -94,19 +94,24 @@ Invoke-RestMethod -Method Post -Uri 'http://127.0.0.1:8765/photoshop/start' -Hea
 Invoke-RestMethod -Method Post -Uri 'http://127.0.0.1:8765/photoshop/stop' -Headers $headers
 ```
 
-| 接口 | 成功响应 | 重复调用 |
-| --- | --- | --- |
-| `POST /photoshop/start` | `status=running`，返回进程 PID 和 COM 读取到的版本 | 已运行时返回 `changed=false` |
-| `POST /photoshop/stop` | 确认进程退出后返回 `status=stopped` | 当前会话中目标已关闭时返回 `changed=false` |
-| `GET /templates` | 返回样机列表，包含 ID、文件名、相对路径、像素尺寸、文件大小和缩略图地址 | 每次读取本次启动时扫描的目录快照 |
-| `GET /templates/{template_id}/thumbnail` | 返回 JPEG 或 PNG 缩略图 | ID 或缩略图不存在时返回 `404` |
+| 接口                                     | 成功响应                                                                | 重复调用                                   |
+| ---------------------------------------- | ----------------------------------------------------------------------- | ------------------------------------------ |
+| `POST /photoshop/start`                  | `status=running`，返回进程 PID 和 COM 读取到的版本                      | 已运行时返回 `changed=false`               |
+| `POST /photoshop/stop`                   | 确认进程退出后返回 `status=stopped`                                     | 当前会话中目标已关闭时返回 `changed=false` |
+| `GET /templates`                         | 返回样机列表，包含 ID、文件名、相对路径、像素尺寸、文件大小和缩略图地址 | 每次读取本次启动时扫描的目录快照           |
+| `GET /templates/{template_id}/thumbnail` | 返回 JPEG 或 PNG 缩略图                                                 | ID 或缩略图不存在时返回 `404`              |
 
 ### 管理后台
 
 打开 `http://127.0.0.1:8765/`，输入 `.env` 中的 `PHOTOSHOP_API_TOKEN`。
 
-- **样机管理**支持上传 PSD 或 PSB、刷新目录、搜索、配置和删除样机。上传后点击「配置」，由 Photoshop 读取图层，再依次绑定 A 面、B 面、枕套、背景。可以跳过任意部位。
-- **生成样机**在 SVG 样机预览上点选已配置的部位，再选择 PNG 或 JPEG（最大 50 MB）。浏览器即时预览贴图位置，点击「生成 PNG」后才上传并进入 Photoshop 出图。一次生成替换一个部位。
+- **样机管理**支持上传 PSD 或 PSB、刷新目录、搜索、配置和删除样机。上传后点击「配置」，选择床品套件、单枕套或单床单，再将对应的部位绑定到 Photoshop 图层。可以跳过任意部位。
+- **生成样机**支持拖动旋转、滚轮缩放，并通过 3D 表面或部位按钮选图。PNG 或 JPEG（最大 50 MB）直接在浏览器内贴图预览，点击「生成 PNG」后才上传并进入 Photoshop 出图。一次生成替换一个部位。
+
+3D 预览所需的 Three.js 和模型由样机服务本地提供，适用于内网部署。浏览器无法启用 WebGL 时，会改用 Canvas 绘制同一套 3D 模型，仍可旋转、缩放和贴图。模型无法读取时，页面会提示并显示 SVG 示意图。
+
+新增预览模型时，将包含 UV 的独立 `.glb` 放进 `app/admin/models/`，在 `app/core/preview_models.json` 登记模型和部位。可替换网格的名称或 glTF 节点的 `extras.previewPart` 应与部位的 `key` 一致。内置模型可用 `python scripts/build_preview_models.py` 重新生成。已有模板默认使用床品套件。
+
 - **生成图**展示排队、生成中、完成和失败状态，支持预览、下载原尺寸 PNG 和删除记录。PNG 文件与任务记录保存在 `data/renders/`。
 
 提交出图后，服务在当前 Windows 桌面会话里通过已注册的 Photoshop COM 串行渲染。服务重启时，中断的任务会显示为失败。

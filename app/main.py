@@ -1,3 +1,5 @@
+import json
+import mimetypes
 from contextlib import asynccontextmanager
 from hashlib import sha256
 from threading import Lock
@@ -10,12 +12,14 @@ from app.api.routes.photoshop import router
 from app.api.routes.renders import router as renders_router
 from app.api.routes.templates import router as templates_router
 from app.core.config import PROJECT_ROOT, load_settings
+from app.core.preview_models import PREVIEW_MODELS
 from app.services.photoshop import PhotoshopControlError, PhotoshopService
 from app.services.renders import RenderService
 from app.services.templates import load_templates
 
 
 ADMIN_ROOT = PROJECT_ROOT / "app" / "admin"
+mimetypes.add_type("text/javascript", ".js")
 
 
 @asynccontextmanager
@@ -44,10 +48,14 @@ app.mount("/admin-assets", StaticFiles(directory=ADMIN_ROOT), name="admin_assets
 @app.get("/", include_in_schema=False)
 def admin() -> HTMLResponse:
     html = (ADMIN_ROOT / "index.html").read_text(encoding="utf-8")
-    for asset in ("admin.css", "admin.js"):
+    for asset in ("admin.css", "admin.js", "preview-3d.js"):
         version = sha256((ADMIN_ROOT / asset).read_bytes()).hexdigest()[:16]
         url = f"./admin-assets/{asset}"
         html = html.replace(url, f"{url}?v={version}")
+    library = "./admin-assets/vendor/three/"
+    imports = {"imports": {"three": library + "build/three.module.min.js", "three/addons/": library + "examples/jsm/"}}
+    html = html.replace("__PREVIEW_IMPORTS__", json.dumps(imports))
+    html = html.replace("__PREVIEW_MODELS__", json.dumps(PREVIEW_MODELS).replace("<", "\\u003c"))
     return HTMLResponse(html, headers={"Cache-Control": "no-store"})
 
 
