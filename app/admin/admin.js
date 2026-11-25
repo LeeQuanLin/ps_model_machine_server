@@ -5,6 +5,7 @@ let token = sessionStorage.getItem("mockup.token") || "";
 let templates = [];
 let renders = [];
 let artwork = null;
+let artworkPreview = null;
 let activePage = "create";
 let refreshingRenders = false;
 let refreshingTemplates = false;
@@ -106,23 +107,27 @@ function updateTemplates(items, selected = $("template-select").value) {
     if (activePage === "templates") drawTemplates();
 }
 
+function selectedTemplate() {
+    return templates.find((item) => item.id === $("template-select").value);
+}
+
 function drawProof() {
-    const template = templates.find((item) => item.id === $("template-select").value);
+    const template = selectedTemplate();
     drawLayers(template);
     const stage = $("proof-stage");
     $("preview-name").textContent = template?.relative_path || "暂未选择样机";
     $("preview-size").textContent = template ? dimensions(template) : "";
-    $("preview-status").hidden = !template?.thumbnail_pending;
     const empty = node("div", "empty-proof");
     empty.append(node("span", "", "▧"), template?.thumbnail_pending ? "正在生成缩略图…"
         : template ? "暂无预览" : "选择一个样机以预览");
     const frame = node("div", "proof-image");
     frame.append(empty);
     stage.replaceChildren(frame);
+    drawLayerPreview(template);
     if (template?.thumbnail_url) {
         showImage(frame, template.thumbnail_url, template.filename, undefined, (image) => {
             frame.style.setProperty("--proof-width", `${390 * image.naturalWidth / image.naturalHeight}px`);
-            drawLayerHighlights(template);
+            drawLayerPreview(template);
             drawLayerFallbacks(template, image);
         });
     }
@@ -132,18 +137,35 @@ function selectedLayerId() {
     return $("layer-list").querySelector("input:checked")?.value || "";
 }
 
-function drawLayerHighlights(template) {
+function drawLayerPreview(template = selectedTemplate()) {
     const frame = $("proof-stage").querySelector(".proof-image");
     frame?.querySelectorAll(".proof-region").forEach((region) => region.remove());
-    if (!frame?.querySelector("img")?.naturalWidth) return;
     const layer = template?.replacement_layers?.find((item) => String(item.id) === selectedLayerId());
-    for (const {left, top, right, bottom} of layer?.preview_regions || []) {
-        const outline = node("span", "proof-region");
-        Object.assign(outline.style, {left: `${left * 100}%`, top: `${top * 100}%`,
-            width: `${(right - left) * 100}%`, height: `${(bottom - top) * 100}%`});
-        outline.setAttribute("aria-hidden", "true");
-        frame.append(outline);
+    const regions = layer?.preview_regions || [];
+    const baseReady = Boolean(frame?.querySelector(":scope > img")?.naturalWidth);
+    const showArtwork = baseReady && regions.length > 0 && artworkPreview?.naturalWidth;
+    if (baseReady) {
+        for (const {left, top, right, bottom} of regions) {
+            const region = node("span", "proof-region");
+            Object.assign(region.style, {left: `${left * 100}%`, top: `${top * 100}%`,
+                width: `${(right - left) * 100}%`, height: `${(bottom - top) * 100}%`});
+            region.setAttribute("aria-hidden", "true");
+            if (showArtwork) {
+                const image = node("img");
+                image.alt = "";
+                image.src = artworkPreview.src;
+                region.append(image);
+            }
+            frame.append(region);
+        }
     }
+    const status = $("preview-status");
+    if (showArtwork) status.textContent = "贴图位置预览，效果以生成图为准。";
+    else if (artworkPreview?.complete && !artworkPreview.naturalWidth) status.textContent = "无法预览这张图片。";
+    else if (artwork && layer && !regions.length) status.textContent = "此图层暂无可用的贴图预览区域。";
+    else if (artwork && template && !layer) status.textContent = "选择图层后查看贴图预览。";
+    else status.textContent = template?.thumbnail_pending ? "正在生成高清缩略图…" : "";
+    status.hidden = !status.textContent;
 }
 
 function drawLayerFallbacks(template, image) {
@@ -347,6 +369,17 @@ function selectArtwork(file) {
     artwork = file;
     $("upload-text").textContent = file?.name || "点击选择，或拖放图片";
     $("upload-meta").textContent = file ? formatBytes(file.size) : "PNG、JPEG · 最大 50 MB";
+    if (artworkPreview) URL.revokeObjectURL(artworkPreview.src);
+    artworkPreview = null;
+    if (file) {
+        const image = new Image();
+        artworkPreview = image;
+        const update = () => { if (artworkPreview === image) drawLayerPreview(); };
+        image.addEventListener("load", update, {once: true});
+        image.addEventListener("error", update, {once: true});
+        image.src = URL.createObjectURL(file);
+    }
+    drawLayerPreview();
 }
 
 $("connection").addEventListener("click", () => {
@@ -378,7 +411,7 @@ for (const button of document.querySelectorAll("[data-close]")) {
 $("template-select").addEventListener("change", drawProof);
 $("layer-list").addEventListener("change", () => {
     updateRenderButton();
-    drawLayerHighlights(templates.find((item) => item.id === $("template-select").value));
+    drawLayerPreview();
 });
 $("template-search").addEventListener("input", drawTemplates);
 $("render-filter").addEventListener("change", drawRenders);
