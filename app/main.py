@@ -1,8 +1,9 @@
 from contextlib import asynccontextmanager
+from hashlib import sha256
 from threading import Lock
 
 from fastapi import FastAPI, Request
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from app.api.routes.photoshop import router
@@ -43,8 +44,13 @@ app.mount("/admin-assets", StaticFiles(directory=ADMIN_ROOT), name="admin_assets
 
 
 @app.get("/", include_in_schema=False)
-def admin() -> FileResponse:
-    return FileResponse(ADMIN_ROOT / "index.html")
+def admin() -> HTMLResponse:
+    html = (ADMIN_ROOT / "index.html").read_text(encoding="utf-8")
+    for asset in ("admin.css", "admin.js"):
+        version = sha256((ADMIN_ROOT / asset).read_bytes()).hexdigest()[:16]
+        url = f"./admin-assets/{asset}"
+        html = html.replace(url, f"{url}?v={version}")
+    return HTMLResponse(html, headers={"Cache-Control": "no-store"})
 
 
 @app.exception_handler(PhotoshopControlError)
