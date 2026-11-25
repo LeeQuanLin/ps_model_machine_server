@@ -1,7 +1,9 @@
+import ctypes
 import json
 import logging
 import os
 import subprocess
+from ctypes import wintypes
 from pathlib import Path
 from threading import Lock
 from typing import Literal
@@ -31,10 +33,22 @@ class PhotoshopService:
     def render(self, script: Path) -> None:
         self._run("render", script)
 
-    def _run(self, action: Literal["start", "stop", "render"], script: Path | None = None) -> dict:
+    def ensure_desktop_session(self) -> None:
         if os.name != "nt":
             raise PhotoshopControlError(503, "Photoshop COM requires Windows.")
 
+        session_id = wintypes.DWORD()
+        process_session = ctypes.WinDLL("kernel32", use_last_error=True).ProcessIdToSessionId
+        process_session.argtypes = (wintypes.DWORD, ctypes.POINTER(wintypes.DWORD))
+        process_session.restype = wintypes.BOOL
+        if not process_session(os.getpid(), ctypes.byref(session_id)):
+            logger.error("Could not determine Windows session for the service: %s", ctypes.get_last_error())
+            raise PhotoshopControlError(503, "无法读取样机服务的 Windows 会话，请检查服务日志。")
+        if session_id.value == 0:
+            raise PhotoshopControlError(503, "样机服务运行在 Windows Session 0。请在渲染账号已登录的桌面里重启服务，再提交生成。")
+
+    def _run(self, action: Literal["start", "stop", "render"], script: Path | None = None) -> dict:
+        self.ensure_desktop_session()
         powershell = Path(os.environ["SystemRoot"]) / "System32/WindowsPowerShell/v1.0/powershell.exe"
         env = {**os.environ, "PHOTOSHOP_EXE": str(self.photoshop_exe)}
         env.pop("PHOTOSHOP_API_TOKEN", None)

@@ -37,6 +37,7 @@ async def create_render(request: Request, template_id: str, filename: str = Quer
     else:
         layer_selector = int(selector) if selector.isascii() and selector.isdecimal() else selector or None
     name = upload_name(filename, set(ARTWORK_FORMATS))
+    state.photoshop.ensure_desktop_session()
     extension = name.suffix.lower()
     render_id = uuid4().hex
     folder = state.renders.root / render_id

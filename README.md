@@ -44,6 +44,20 @@ notepad .\.env
 
 通过内网反向代理或 SSH 隧道连接远程服务。使用反向代理时由代理提供 HTTPS，避免 Bearer Token 明文传输。若用 Windows 任务计划程序开机后启动，选择在渲染账号登录时触发，并选择「仅当用户登录时运行」。保留单个 Uvicorn worker，启动和关闭请求会串行执行。
 
+### 处理 Windows Session 0 错误
+
+如果出图提示 `Windows Session 0` 或 `Run this service in the logged-in Windows user desktop session.`，在服务器上查看监听进程所属的会话。端口按实际部署修改。
+
+```powershell
+Get-NetTCPConnection -LocalPort 8765 -State Listen |
+    Select-Object -ExpandProperty OwningProcess -Unique |
+    ForEach-Object { Get-Process -Id $_ | Select-Object Id, ProcessName, SessionId }
+Get-Process -Name Photoshop -ErrorAction SilentlyContinue |
+    Select-Object Id, ProcessName, SessionId
+```
+
+通过原来的启动方式停止旧服务。用渲染账号登录服务器桌面（本机或远程桌面），在该桌面的 PowerShell 窗口中执行上面的 Uvicorn 命令。若由任务计划程序启动，改成以渲染账号「仅当用户登录时运行」，然后启动任务。确认端口监听进程的 `SessionId` 为非零。若 Photoshop 已打开，它的 `SessionId` 应与监听进程一致。重启后重新提交失败的出图任务。
+
 ### 检查绿色版 COM 注册
 
 绿色版必须提供 `Photoshop.Application` 的 COM 注册能力，注册的 EXE 必须与 `PHOTOSHOP_EXE` 一致。先在运行服务的账号下检查注册项：
