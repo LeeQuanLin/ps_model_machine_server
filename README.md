@@ -56,7 +56,18 @@ Get-Process -Name Photoshop -ErrorAction SilentlyContinue |
     Select-Object Id, ProcessName, SessionId
 ```
 
-通过原来的启动方式停止旧服务。用渲染账号登录服务器桌面（本机或远程桌面），在该桌面的 PowerShell 窗口中执行上面的 Uvicorn 命令。若由任务计划程序启动，改成以渲染账号「仅当用户登录时运行」，然后启动任务。确认端口监听进程的 `SessionId` 为非零。若 Photoshop 已打开，它的 `SessionId` 应与监听进程一致。重启后重新提交失败的出图任务。
+通过原来的启动方式停止旧服务。用渲染账号登录服务器桌面（本机或远程桌面），在该桌面的 PowerShell 窗口中执行上面的 Uvicorn 命令。
+
+如果平时通过 SSH 管理服务器，可以在服务器的项目目录注册并触发桌面计划任务。先让渲染账号登录一次 Windows 桌面。脚本默认用当前账号注册任务，SSH 账号与渲染账号不同时，指定 `-RenderUser '服务器名\渲染账号'`，并使用有权为该账号注册计划任务的账号执行。
+
+```powershell
+.\scripts\register_desktop_task.ps1
+Start-ScheduledTask -TaskName 'PhotoshopMockupServer' -TaskPath '\'
+```
+
+默认监听 `127.0.0.1:8765`。已有部署使用其他监听地址或端口时，注册时传入对应的 `-BindAddress` 和 `-Port`。任务也会在渲染账号下次登录时自动启动。通过 SSH 触发时，任务仍在已登录的 Windows 桌面会话里运行。使用远程桌面时，可以断开连接并保留登录会话。
+
+启动后用上面的命令确认端口监听进程的 `SessionId` 为非零。若 Photoshop 已打开，它的 `SessionId` 应与监听进程一致。然后重新提交失败的出图任务。
 
 ### 检查绿色版 COM 注册
 
