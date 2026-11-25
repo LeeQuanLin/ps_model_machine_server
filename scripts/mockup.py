@@ -36,6 +36,7 @@ def prepare_job(folder, template, artwork, output, baseline, layer):
 
     job = {
         "template": str(template_copy),
+        "template_name": template.name,
         "artwork": str(artwork_copy),
         "replacement": str(folder / "replacement.psd"),
         "output": destination(output, "output"),

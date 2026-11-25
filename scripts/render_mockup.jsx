@@ -57,6 +57,21 @@
         if (doc) doc.close(SaveOptions.DONOTSAVECHANGES);
     }
 
+    function openInput(path) {
+        var source = new File(path);
+        if (!source.exists) throw Error("任务文件不存在或不可读取。");
+        try {
+            return app.open(source);
+        } catch (error) {
+            if (!/\.psd$/i.test(path)) throw error;
+            try {
+                return app.open(source, OpenDocumentType.PHOTOSHOP);
+            } catch (retryError) {
+                throw Error(error + "；按 PSD 格式重试失败：" + retryError);
+            }
+        }
+    }
+
     function fitArtwork(doc, width, height, resolution) {
         var sourceWidth = doc.width.as("px"), sourceHeight = doc.height.as("px");
         var scale = Math.min(sourceWidth / width, sourceHeight / height);
@@ -130,22 +145,30 @@
         if (file.exists) file.remove();
     }
 
-    var result;
+    var result, stage = "初始化";
     try {
         app.displayDialogs = DialogModes.NO;
         var openDocuments = {};
         for (var i = 0; i < app.documents.length; i++) openDocuments[app.documents[i].id] = true;
-        work = app.open(new File(job.template));
+        stage = "打开样机模板 " + job.template_name;
+        work = openInput(job.template);
         openDocuments[work.id] = true;
+        stage = "选择替换图层";
         var target = selectSmartObject(work, job.layer);
         requireEmbeddedObject(target);
-        if (job.baseline) stageComposite(work, job.baseline);
+        if (job.baseline) {
+            stage = "导出原样机";
+            stageComposite(work, job.baseline);
+        }
+        stage = "打开智能对象内容";
         work.activeLayer = target;
         executeAction(stringIDToTypeID("placedLayerEditContents"), undefined, DialogModes.NO);
         if (openDocuments[app.activeDocument.id]) throw Error("Photoshop did not open a separate Smart Object document.");
         child = app.activeDocument;
 
-        art = app.open(new File(job.artwork));
+        stage = "打开印花图片";
+        art = openInput(job.artwork);
+        stage = "替换智能对象内容";
         fitArtwork(art, child.width.as("px"), child.height.as("px"), child.resolution);
         if (/\.ps[bd]$/i.test(child.name)) {
             insertArtwork(child, art);
@@ -161,6 +184,7 @@
         }
         close(art); art = null;
         close(child); child = null;
+        stage = "导出生成图";
         app.activeDocument = work;
         stageComposite(work, job.output);
         if (job.baseline) {
@@ -171,7 +195,7 @@
         result = "OK Photoshop " + app.version + " " + work.width.as("px") + "x" + work.height.as("px");
     } catch (error) {
         if (baselinePublished) removeFile(job.baseline.path);
-        result = "ERROR " + error + " (line " + error.line + ")";
+        result = "ERROR " + stage + "：" + error + " (Photoshop " + app.version + ", line " + error.line + ")";
     } finally {
         try { close(art); } catch (ignored) {}
         try { close(child); } catch (ignored) {}
