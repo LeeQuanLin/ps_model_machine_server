@@ -9,6 +9,7 @@ PSB_LONG_TAGS = {
     b"FMsk", b"lnk2", b"FEid", b"FXid", b"FELS", b"PxSD", b"lnk3", b"lnkE", b"pths",
     b"extd", b"extn", b"cinf", b"artd",
 }
+Bounds = tuple[int, int, int, int]
 
 
 @dataclass(frozen=True)
@@ -16,6 +17,7 @@ class ReplacementLayer:
     id: int
     name: str
     path: str
+    bounds: tuple[Bounds, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -27,6 +29,22 @@ class LayerRecord:
     opacity: int
     smart: bool
     source: str | None
+    bounds: Bounds | None = None
+
+
+def layer_bounds(stream: BinaryIO, end: int, bounds: Bounds) -> Bounds | None:
+    mask_end = section_end(stream, end)
+    top, left, bottom, right = bounds
+    if mask_end - stream.tell() >= 18:
+        mask_top, mask_left, mask_bottom, mask_right, default, flags = unpack(">4i2B", stream.read(18))
+        if default == 0 and not flags & 6:
+            if flags & 1:
+                mask_top, mask_bottom = mask_top + top, mask_bottom + top
+                mask_left, mask_right = mask_left + left, mask_right + left
+            top, left = max(top, mask_top), max(left, mask_left)
+            bottom, right = min(bottom, mask_bottom), min(right, mask_right)
+    stream.seek(mask_end)
+    return (top, left, bottom, right) if top < bottom and left < right else None
 
 
 def read_int(stream: BinaryIO, size: int = 4) -> int:
@@ -68,13 +86,13 @@ def read_records(stream: BinaryIO, end: int, version: int) -> list[LayerRecord]:
     count = abs(unpack(">h", stream.read(2))[0])
     records = []
     for _ in range(count):
-        stream.seek(16, 1)
+        bounds = unpack(">4i", stream.read(16))
         stream.seek(read_int(stream, 2) * (10 if version == 2 else 6), 1)
         stream.seek(8, 1)
         opacity, _, flags, _ = unpack(">4B", stream.read(4))
         extra_end = section_end(stream, end)
-        for _ in range(2):
-            stream.seek(section_end(stream, extra_end))
+        visible_bounds = layer_bounds(stream, extra_end, bounds)
+        stream.seek(section_end(stream, extra_end))
         name_length = read_int(stream, 1)
         name = stream.read(name_length).decode("latin-1")
         stream.seek(-(name_length + 1) % 4, 1)
@@ -105,7 +123,7 @@ def read_records(stream: BinaryIO, end: int, version: int) -> list[LayerRecord]:
         if stream.tell() > extra_end:
             raise ValueError("Photoshop layer record exceeds its bounds")
         stream.seek(extra_end)
-        records.append(LayerRecord(layer_id, name, divider, not (flags & 2), opacity, smart, source))
+        records.append(LayerRecord(layer_id, name, divider, not (flags & 2), opacity, smart, source, visible_bounds))
     return records
 
 
@@ -134,7 +152,7 @@ def select_replacement_layers(records: list[LayerRecord]) -> tuple[ReplacementLa
     groups: list[LayerRecord] = []
     placeholders = []
     legacy_sources = []
-    visible_sources: dict[str, int] = {}
+    visible_sources: dict[str, list[LayerRecord]] = {}
     has_paste_group = False
     for layer in reversed(records):
         if layer.divider in (1, 2):
@@ -151,11 +169,13 @@ def select_replacement_layers(records: list[LayerRecord]) -> tuple[ReplacementLa
             if not groups and layer.opacity == 0 and layer.source:
                 legacy_sources.append((layer, path, False))
             if shown and layer.source:
-                visible_sources.setdefault(layer.source, layer.id)
+                visible_sources.setdefault(layer.source, []).append(layer)
 
     options = []
     for layer, path, shown in placeholders if has_paste_group else legacy_sources:
-        target_id = layer.id if shown else visible_sources.get(layer.source or "")
-        if target_id is not None:
-            options.append(ReplacementLayer(target_id, layer.name, path))
+        copies = visible_sources.get(layer.source or "", [])
+        if shown or copies:
+            target_id = layer.id if shown else copies[0].id
+            regions = tuple(dict.fromkeys(item.bounds for item in copies or [layer] if item.bounds is not None))
+            options.append(ReplacementLayer(target_id, layer.name, path, regions))
     return tuple({option.id: option for option in options}.values())

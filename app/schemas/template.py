@@ -1,10 +1,18 @@
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
+
+
+class LayerPreviewRegion(BaseModel):
+    left: float
+    top: float
+    right: float
+    bottom: float
 
 
 class ReplacementLayerSummary(BaseModel):
     id: int
     name: str
     path: str
+    preview_regions: list[LayerPreviewRegion] = Field(default_factory=list)
 
 
 class TemplateSummary(BaseModel):

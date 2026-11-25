@@ -74,7 +74,7 @@ function dimensions(item) {
     return `${item.width} × ${item.height} px`;
 }
 
-async function showImage(container, path, name, fallback = "无法读取预览") {
+async function showImage(container, path, name, fallback = "无法读取预览", onLoad) {
     if (!path) return;
     const marker = Symbol();
     container.imageRequest = marker;
@@ -84,7 +84,10 @@ async function showImage(container, path, name, fallback = "无法读取预览")
         const image = node("img");
         image.alt = name;
         const url = URL.createObjectURL(blob);
-        image.addEventListener("load", () => URL.revokeObjectURL(url), {once: true});
+        image.addEventListener("load", () => {
+            URL.revokeObjectURL(url);
+            if (container.imageRequest === marker && image.isConnected) onLoad?.(image);
+        }, {once: true});
         image.addEventListener("error", () => URL.revokeObjectURL(url), {once: true});
         image.src = url;
         container.replaceChildren(image);
@@ -107,15 +110,63 @@ function drawProof() {
     const template = templates.find((item) => item.id === $("template-select").value);
     drawLayers(template);
     const stage = $("proof-stage");
-    stage.imageRequest = null;
     $("preview-name").textContent = template?.relative_path || "暂未选择样机";
     $("preview-size").textContent = template ? dimensions(template) : "";
     $("preview-status").hidden = !template?.thumbnail_pending;
     const empty = node("div", "empty-proof");
     empty.append(node("span", "", "▧"), template?.thumbnail_pending ? "正在生成缩略图…"
         : template ? "暂无预览" : "选择一个样机以预览");
-    stage.replaceChildren(empty);
-    if (template) showImage(stage, template.thumbnail_url, template.filename);
+    const frame = node("div", "proof-image");
+    frame.append(empty);
+    stage.replaceChildren(frame);
+    const syncLayer = () => drawLayerPreview(template);
+    syncLayer();
+    if (template?.thumbnail_url) {
+        showImage(frame, template.thumbnail_url, template.filename, undefined, (image) => {
+            frame.style.setProperty("--proof-width", `${390 * image.naturalWidth / image.naturalHeight}px`);
+            syncLayer();
+        });
+    }
+}
+
+function drawLayerPreview(template) {
+    const thumb = $("layer-preview");
+    const frame = $("proof-stage").querySelector(".proof-image");
+    frame?.querySelectorAll(".proof-region").forEach((region) => region.remove());
+    const layer = template?.replacement_layers?.find((item) => String(item.id) === $("layer").value);
+    const image = frame?.querySelector("img");
+    const regions = layer?.preview_regions || [];
+    if (!image?.naturalWidth || !regions.length) {
+        thumb.replaceChildren(node("span", "", layer ? "暂无预览" : "选中后预览"));
+        return;
+    }
+
+    for (const {left, top, right, bottom} of regions) {
+        const outline = node("span", "proof-region");
+        Object.assign(outline.style, {left: `${left * 100}%`, top: `${top * 100}%`,
+            width: `${(right - left) * 100}%`, height: `${(bottom - top) * 100}%`});
+        outline.setAttribute("aria-hidden", "true");
+        frame.append(outline);
+    }
+
+    // Crop the same image shown on the right, so the thumbnail uses the current template preview.
+    const left = Math.min(...regions.map((region) => region.left));
+    const top = Math.min(...regions.map((region) => region.top));
+    const right = Math.max(...regions.map((region) => region.right));
+    const bottom = Math.max(...regions.map((region) => region.bottom));
+    const width = (right - left) * image.naturalWidth;
+    const height = (bottom - top) * image.naturalHeight;
+    const canvas = node("canvas");
+    canvas.width = 224;
+    canvas.height = 140;
+    canvas.setAttribute("role", "img");
+    canvas.setAttribute("aria-label", `${layer.name} 图层区域预览`);
+    const scale = Math.min(canvas.width / width, canvas.height / height);
+    const drawWidth = width * scale;
+    const drawHeight = height * scale;
+    canvas.getContext("2d").drawImage(image, left * image.naturalWidth, top * image.naturalHeight, width, height,
+        (canvas.width - drawWidth) / 2, (canvas.height - drawHeight) / 2, drawWidth, drawHeight);
+    thumb.replaceChildren(canvas);
 }
 
 function updateRenderButton() {
@@ -308,7 +359,10 @@ for (const button of document.querySelectorAll("[data-close]")) {
     button.addEventListener("click", () => $(button.dataset.close).close());
 }
 $("template-select").addEventListener("change", drawProof);
-$("layer").addEventListener("change", updateRenderButton);
+$("layer").addEventListener("change", () => {
+    updateRenderButton();
+    drawLayerPreview(templates.find((item) => item.id === $("template-select").value));
+});
 $("template-search").addEventListener("input", drawTemplates);
 $("render-filter").addEventListener("change", drawRenders);
 $("artwork-input").addEventListener("change", (event) => selectArtwork(event.target.files[0] || null));

@@ -355,6 +355,37 @@ main {
     margin-bottom:17px;
 }
 
+.layer-picker {
+    display:grid;
+    grid-template-columns:minmax(0,1fr) auto;
+    align-items:center;
+    gap:10px;
+    margin-bottom:17px;
+}
+
+.layer-picker select {
+    margin-bottom:0;
+}
+
+.layer-preview {
+    display:grid;
+    place-items:center;
+    width:112px;
+    height:70px;
+    border:1px solid var(--line);
+    border-radius:8px;
+    overflow:hidden;
+    background:#f0eef5;
+    color:var(--muted);
+    font-size:11px;
+}
+
+.layer-preview canvas {
+    display:block;
+    width:100%;
+    height:100%;
+}
+
 .field-note,.preview-status {
     color:var(--muted);
     font-size:12px;
@@ -478,12 +509,24 @@ main {
     border-top:0;
 }
 
-.proof-stage img {
+.proof-image {
+    position:relative;
+    width:min(100%,var(--proof-width,100%));
+    text-align:center;
+}
+
+.proof-image img {
+    display:block;
     width:100%;
-    height:100%;
-    max-height:390px;
-    object-fit:contain;
+    height:auto;
     filter:drop-shadow(0 4px 10px #26203332);
+}
+
+.proof-region {
+    position:absolute;
+    border:2px solid var(--accent);
+    box-shadow:inset 0 0 0 1px #fff;
+    pointer-events:none;
 }
 
 .empty-proof {

@@ -7,7 +7,8 @@ from starlette.concurrency import run_in_threadpool
 
 from app.api.dependencies import authorize
 from app.api.uploads import save_upload, upload_name
-from app.schemas.template import ReplacementLayerSummary, TemplateSummary
+from app.schemas.template import LayerPreviewRegion, ReplacementLayerSummary, TemplateSummary
+from app.services.template_layers import ReplacementLayer
 from app.services.template_previews import queue_template_previews
 from app.services.templates import TemplateRecord, VERSIONS, load_templates, read_template
 
@@ -18,6 +19,17 @@ router = APIRouter(prefix="/templates", tags=["Templates"], dependencies=[Depend
 @router.get("")
 def list_templates(request: Request) -> list[TemplateSummary]:
     return [summary(request, template) for template in request.app.state.templates.values()]
+
+
+def summarize_layer(layer: ReplacementLayer, template: TemplateRecord) -> ReplacementLayerSummary:
+    regions = []
+    for top, left, bottom, right in layer.bounds:
+        top, left = max(0, top), max(0, left)
+        bottom, right = min(template.height, bottom), min(template.width, right)
+        if top < bottom and left < right:
+            regions.append(LayerPreviewRegion(left=left / template.width, top=top / template.height,
+                                              right=right / template.width, bottom=bottom / template.height))
+    return ReplacementLayerSummary(id=layer.id, name=layer.name, path=layer.path, preview_regions=regions)
 
 
 def summary(request: Request, template: TemplateRecord) -> TemplateSummary:
@@ -32,8 +44,7 @@ def summary(request: Request, template: TemplateRecord) -> TemplateSummary:
         thumbnail_url=(request.url_for("get_template_thumbnail", template_id=template.id).path
                        if template.thumbnail is not None else None),
         thumbnail_pending=template.thumbnail_pending,
-        replacement_layers=[ReplacementLayerSummary(id=layer.id, name=layer.name, path=layer.path)
-                            for layer in template.replacement_layers],
+        replacement_layers=[summarize_layer(layer, template) for layer in template.replacement_layers],
     )
 
 
