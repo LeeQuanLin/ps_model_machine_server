@@ -1,24 +1,24 @@
 const $ = (id) => document.getElementById(id);
 const pageNames = {create: "生成样机", templates: "样机管理", renders: "生成图"};
 const previewModels = JSON.parse($("preview-models").textContent);
-const viewerURL = document.currentScript.dataset.viewer;
+const viewerURL = new URL(document.currentScript.dataset.viewer, document.baseURI).href;
 const proofParts = [
     {
-        key: "background", bounds: [0, 0, 440, 456], label: [58, 36], color: "#e8e3f4",
+        key: "background", bounds: [0, 0, 440, 456], label: [58, 36],
         outline: "M18 0H422Q440 0 440 18V438Q440 456 422 456H18Q0 456 0 438V18Q0 0 18 0Z",
     },
     {
-        key: "pillowcase", bounds: [126, 49, 188, 88], label: [220, 93], color: "#f7f0ec",
+        key: "pillowcase", bounds: [126, 49, 188, 88], label: [220, 93],
         outline: "M140 56Q220 43 300 56Q314 59 311 73L306 92L311 111Q313 126 297 129Q220 141 143 129Q127 126 129 111L134 92L129 73Q126 59 140 56Z",
         stitch: "M146 64Q220 53 294 64Q302 65 301 75L297 92L301 110Q303 119 293 121Q220 132 147 121Q137 119 139 110L143 92L139 75Q138 65 146 64Z",
     },
     {
-        key: "a_side", bounds: [76, 199, 288, 219], label: [220, 313], color: "#c8bae9",
+        key: "a_side", bounds: [76, 199, 288, 219], label: [220, 313],
         outline: "M105 200H335L362 389Q365 406 349 411Q220 424 91 411Q75 406 78 389Z",
         stitch: "M111 229L89 387Q87 399 100 401Q220 412 340 401Q353 399 351 387L329 229",
     },
     {
-        key: "b_side", bounds: [92, 150, 256, 80], label: [220, 190], color: "#a7b6dc",
+        key: "b_side", bounds: [92, 150, 256, 80], label: [220, 190],
         outline: "M112 155Q220 147 328 155Q338 155 340 165L347 209Q349 219 338 221Q220 236 102 221Q91 219 93 209L100 165Q102 155 112 155Z",
         stitch: "M103 207Q220 221 337 207",
     },
@@ -27,8 +27,7 @@ const statusNames = {queued: "排队中", running: "生成中", completed: "已�
 let token = sessionStorage.getItem("mockup.token") || "";
 let templates = [];
 let renders = [];
-let artwork = null;
-let artworkPreview = null;
+const artworks = new Map();
 let selectedSlot = null;
 let previewViewer = null;
 let configuration = null;
@@ -158,9 +157,11 @@ function previewModel(template) {
 }
 
 function selectProofSlot(key) {
+    const openPicker = selectedSlot === key || !artworks.has(key);
+    if (key !== selectedSlot) $("copy-artwork").open = false;
     selectedSlot = key;
     updateProofSelection();
-    if (selectedLayerId()) $("artwork-input").click();
+    if (openPicker && selectedLayerId()) $("artwork-input").click();
 }
 
 function clearProofViewer() {
@@ -176,6 +177,13 @@ function drawProof() {
     stage.dataset.template = template?.id || "";
     if (previous !== stage.dataset.template) selectedSlot = null;
     const choices = templateSlots(template);
+    $("copy-artwork").open = false;
+    for (const [key, entry] of artworks) {
+        if (previous !== stage.dataset.template || !choices.some((slot) => slot.key === key && slot.layer.id === entry.layerId)) {
+            URL.revokeObjectURL(entry.image.src);
+            artworks.delete(key);
+        }
+    }
     if (!choices.some((slot) => slot.key === selectedSlot)) selectedSlot = choices.length === 1 ? choices[0].key : null;
     $("preview-name").textContent = template?.relative_path || "暂未选择样机";
     $("preview-size").textContent = template ? dimensions(template) : "";
@@ -191,8 +199,13 @@ function drawProof() {
     const model = previewModel(template);
     for (const part of model.parts) {
         const configured = choices.some(({key}) => key === part.key);
-        const button = action(part.label, () => selectProofSlot(part.key),
+        const button = action("", () => selectProofSlot(part.key),
             configured ? "preview-part" : "preview-part is-unconfigured");
+        const swatch = node("span", "part-swatch");
+        const description = node("span", "part-description");
+        description.append(node("strong", "", part.label), node("small", "part-state", configured ? "待选图" : "未绑定"));
+        button.append(swatch, description);
+        button.disabled = !configured;
         button.dataset.slot = part.key;
         button.setAttribute("aria-label", configured ? `为${part.label}选择图片` : `${part.label}尚未绑定图层`);
         toolbar.append(button);
@@ -221,7 +234,6 @@ function drawProof() {
         if (!host.isConnected) { viewer.dispose(); return; }
         previewViewer = viewer;
         host.dataset.renderer = viewer.mode;
-        host.append(node("span", "preview-orbit-hint", "拖动旋转 · 滚轮缩放"));
         updateProofSelection();
     }).catch(fallback);
     startViewer();
@@ -230,14 +242,15 @@ function drawProof() {
 function drawProofFallback(stage, model, choices) {
     const frame = svgNode("svg", {class: "proof-image", viewBox: "0 0 440 456",
         role: "group", "aria-label": `${model.label}替换部位示意图`});
-    stage.replaceChildren(frame, node("span", "preview-orbit-hint", "3D 加载失败，已切换示意图"));
+    stage.replaceChildren(frame);
     drawProofRegions(frame, model, choices);
     updateProofSelection();
 }
 
 function drawProofRegions(frame, model, choices) {
     const definitions = svgNode("defs");
-    frame.append(definitions);
+    const plane = svgNode("g", {transform: "matrix(.75 .20 -.26 .71 100 14)"});
+    frame.append(definitions, plane);
     const isPillow = model === previewModels.pillowcase;
     const parts = isPillow ? model.parts.map(({key}, index) => ({
         ...proofParts.find((part) => part.key === "pillowcase"), key,
@@ -251,8 +264,9 @@ function drawProofRegions(frame, model, choices) {
             "data-slot": slot.key, role: "button", tabindex: "0",
             "aria-label": configured ? `为${slot.label}选择图片` : `${slot.label}尚未绑定图层`});
         if (part.transform) shape.setAttribute("transform", part.transform);
-        shape.append(svgNode("path", {class: "proof-surface", d: part.outline, fill: part.color}));
-        frame.append(shape);
+        shape.append(svgNode("path", {class: "proof-depth", d: part.outline, transform: "translate(0 7)"}));
+        shape.append(svgNode("path", {class: "proof-surface", d: part.outline}));
+        plane.append(shape);
         const clipId = `proof-clip-${part.key}`;
         const clip = svgNode("clipPath", {id: clipId});
         clip.append(svgNode("path", {d: part.outline}));
@@ -286,16 +300,32 @@ function updateProofSelection() {
     const choices = templateSlots(template);
     const slot = previewModel(template).parts.find(({key}) => key === selectedSlot);
     const layerId = choices.find(({key}) => key === selectedSlot)?.layer.id;
+    const entry = artworks.get(selectedSlot);
+    const artworkPreview = entry?.image;
+    $("artwork-input").disabled = !layerId;
+    $("clear-artwork").hidden = !entry;
+    const copy = $("copy-artwork");
+    copy.hidden = !artworkPreview?.naturalWidth || choices.length < 2;
+    if (copy.hidden) copy.open = false;
+    $("upload-text").textContent = entry?.file.name || (layerId ? "点击选择，或拖放图片" : "请先选择替换部位");
+    $("upload-meta").textContent = entry ? formatBytes(entry.file.size) : "PNG、JPEG · 最大 50 MB";
     for (const item of document.querySelectorAll("#proof-stage [data-slot], #preview-parts [data-slot]")) {
         const selected = item.dataset.slot === selectedSlot;
         item.classList.toggle("is-selected", selected);
         item.setAttribute("aria-pressed", String(selected));
+        const art = artworks.get(item.dataset.slot)?.image;
         const image = item.querySelector("image");
-        if (!image) continue;
-        if (selected && layerId && artworkPreview?.naturalWidth) image.setAttribute("href", artworkPreview.src);
-        else image.removeAttribute("href");
+        if (image) {
+            if (art?.naturalWidth) image.setAttribute("href", art.src);
+            else image.removeAttribute("href");
+        } else if (!item.disabled) {
+            item.querySelector(".part-swatch").style.backgroundImage = art?.naturalWidth ? `url("${art.src}")` : "";
+            const state = art?.naturalWidth ? "已设图" : "待选图";
+            item.querySelector(".part-state").textContent = state;
+            item.setAttribute("aria-label", `${item.querySelector("strong").textContent}，${state}`);
+        }
     }
-    previewViewer?.show(layerId ? selectedSlot : null, artworkPreview?.naturalWidth ? artworkPreview : null);
+    previewViewer?.show(layerId ? selectedSlot : null, artworks);
     $("slot-selection").textContent = slot ? (layerId ? `替换部位 · ${slot.label}` : `${slot.label}尚未绑定图层`)
         : "请点选要替换的部位";
     const status = $("preview-status");
@@ -303,18 +333,18 @@ function updateProofSelection() {
     else if (template && !template.slots) status.textContent = "请先在样机管理中配置替换部位。";
     else if (template && !choices.length) status.textContent = "配置中没有启用替换部位。";
     else if (artworkPreview?.complete && !artworkPreview.naturalWidth) status.textContent = "无法预览这张图片。";
-    else if (slot && artworkPreview?.naturalWidth) status.textContent = "贴图位置预览，效果以生成图为准。";
+    else if (slot && artworkPreview?.naturalWidth) status.textContent = `生成 PNG 时只替换「${slot.label}」。`;
     else status.textContent = "";
     status.hidden = !status.textContent;
     updateRenderButton();
 }
 
-function selectedLayerId() {
-    return templateSlots(selectedTemplate()).find(({key}) => key === selectedSlot)?.layer.id || "";
+function selectedLayerId(slotKey = selectedSlot) {
+    return templateSlots(selectedTemplate()).find(({key}) => key === slotKey)?.layer.id || "";
 }
 
 function updateRenderButton() {
-    $("render-submit").disabled = submittingRender || !selectedLayerId() || !artwork;
+    $("render-submit").disabled = submittingRender || !selectedLayerId() || !artworks.get(selectedSlot)?.image.naturalWidth;
 }
 
 function drawTemplates() {
@@ -582,20 +612,18 @@ async function confirmDelete(title, name, operation) {
     if (await choice === "delete") await operation();
 }
 
-function selectArtwork(file) {
-    artwork = file;
-    $("upload-text").textContent = file?.name || "点击选择，或拖放图片";
-    $("upload-meta").textContent = file ? formatBytes(file.size) : "PNG、JPEG · 最大 50 MB";
-    if (artworkPreview) URL.revokeObjectURL(artworkPreview.src);
-    artworkPreview = null;
-    if (file) {
-        const image = new Image();
-        artworkPreview = image;
-        const update = () => { if (artworkPreview === image) updateProofSelection(); };
-        image.addEventListener("load", update, {once: true});
-        image.addEventListener("error", update, {once: true});
-        image.src = URL.createObjectURL(file);
-    }
+function selectArtwork(file, key = selectedSlot) {
+    if (!file) return;
+    const layerId = selectedLayerId(key);
+    if (!layerId) return notify("请先选择已绑定图层的部位。", true);
+    const previous = artworks.get(key);
+    if (previous) URL.revokeObjectURL(previous.image.src);
+    const image = new Image();
+    artworks.set(key, {file, image, layerId});
+    const update = () => { if (artworks.get(key)?.image === image) updateProofSelection(); };
+    image.addEventListener("load", update, {once: true});
+    image.addEventListener("error", update, {once: true});
+    image.src = URL.createObjectURL(file);
     updateProofSelection();
 }
 
@@ -646,33 +674,68 @@ $("configuration-skip").addEventListener("click", () => advanceConfiguration(tru
 $("configuration-next").addEventListener("click", () => advanceConfiguration(false));
 $("template-search").addEventListener("input", drawTemplates);
 $("render-filter").addEventListener("change", drawRenders);
-$("artwork-input").addEventListener("change", (event) => selectArtwork(event.target.files[0] || null));
+$("artwork-input").addEventListener("change", (event) => {
+    selectArtwork(event.target.files[0]);
+    event.target.value = "";
+});
+$("clear-artwork").addEventListener("click", () => {
+    const entry = artworks.get(selectedSlot);
+    if (!entry) return;
+    URL.revokeObjectURL(entry.image.src);
+    artworks.delete(selectedSlot);
+    updateProofSelection();
+});
+$("copy-artwork").addEventListener("toggle", () => {
+    if (!$("copy-artwork").open) return;
+    const targets = $("copy-targets");
+    targets.replaceChildren();
+    for (const slot of templateSlots(selectedTemplate())) {
+        if (slot.key === selectedSlot) continue;
+        const label = node("label");
+        const input = node("input");
+        input.type = "checkbox";
+        input.value = slot.key;
+        label.append(input, artworks.has(slot.key) ? `${slot.label}（替换）` : slot.label);
+        targets.append(label);
+    }
+    $("apply-artwork").disabled = true;
+});
+$("copy-targets").addEventListener("change", () => {
+    $("apply-artwork").disabled = !$("copy-targets").querySelector(":checked");
+});
+$("apply-artwork").addEventListener("click", () => {
+    const source = artworks.get(selectedSlot);
+    if (!source?.image.naturalWidth) return;
+    for (const target of $("copy-targets").querySelectorAll(":checked")) selectArtwork(source.file, target.value);
+    $("copy-artwork").open = false;
+});
 const dropZone = $("drop-zone");
 dropZone.addEventListener("dragover", (event) => { event.preventDefault(); dropZone.classList.add("dragging"); });
 dropZone.addEventListener("dragleave", () => dropZone.classList.remove("dragging"));
 dropZone.addEventListener("drop", (event) => {
     event.preventDefault();
     dropZone.classList.remove("dragging");
-    if (event.dataTransfer.files.length) {
-        $("artwork-input").files = event.dataTransfer.files;
-        selectArtwork(event.dataTransfer.files[0]);
-    }
+    selectArtwork(event.dataTransfer.files[0]);
 });
 $("render-form").addEventListener("submit", (event) => {
     event.preventDefault();
     handle(async () => {
-        const layerId = selectedLayerId();
-        if (!requireConnection() || !artwork || !layerId || submittingRender) return;
+        const key = selectedSlot;
+        const entry = artworks.get(key);
+        if (!requireConnection() || !entry?.image.naturalWidth || !selectedLayerId() || submittingRender) return;
         const button = $("render-submit");
-        const params = {template_id: $("template-select").value, filename: artwork.name, layer_id: layerId};
+        const params = {template_id: $("template-select").value, filename: entry.file.name, layer_id: entry.layerId};
         submittingRender = true;
         updateRenderButton();
         button.textContent = "正在提交…";
         try {
-            const queued = await (await api(query("renders", params), {method: "POST", body: artwork})).json();
+            const queued = await (await api(query("renders", params), {method: "POST", body: entry.file})).json();
             renders = [queued, ...renders];
-            $("artwork-input").value = "";
-            selectArtwork(null);
+            if (artworks.get(key) === entry) {
+                URL.revokeObjectURL(entry.image.src);
+                artworks.delete(key);
+                updateProofSelection();
+            }
             $("render-filter").value = "all";
             if (activePage === "renders") drawRenders();
             else location.hash = "renders";

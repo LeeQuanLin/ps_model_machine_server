@@ -1,0 +1,117 @@
+import json
+import sqlite3
+import time
+from contextlib import contextmanager
+from datetime import datetime, timezone
+from uuid import uuid4
+
+from app.config import DATA, revision
+
+
+def now():
+    return datetime.now(timezone.utc).isoformat(timespec="milliseconds")
+
+
+@contextmanager
+def database():
+    db = sqlite3.connect(DATA / "studio.sqlite3", timeout=20)
+    db.row_factory = sqlite3.Row
+    try:
+        with db:
+            yield db
+    finally:
+        db.close()
+
+
+def initialize():
+    DATA.mkdir(parents=True, exist_ok=True)
+    (DATA / "inputs").mkdir(exist_ok=True)
+    (DATA / "outputs").mkdir(exist_ok=True)
+    with database() as db:
+        db.execute("PRAGMA journal_mode=WAL")
+        db.executescript("""
+            CREATE TABLE IF NOT EXISTS jobs (
+                id TEXT PRIMARY KEY, batch TEXT NOT NULL, template TEXT NOT NULL, revision TEXT NOT NULL,
+                settings TEXT NOT NULL, status TEXT NOT NULL, created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL, detail TEXT NOT NULL DEFAULT '',
+                next_dispatch REAL NOT NULL DEFAULT 0
+            );
+            CREATE INDEX IF NOT EXISTS job_dispatch ON jobs(status, next_dispatch);
+            CREATE INDEX IF NOT EXISTS job_created ON jobs(created_at);
+            CREATE TABLE IF NOT EXISTS events (
+                id INTEGER PRIMARY KEY AUTOINCREMENT, job_id TEXT NOT NULL,
+                at TEXT NOT NULL, level TEXT NOT NULL, message TEXT NOT NULL
+            );
+        """)
+
+
+def event(db, job_id, message, level="info"):
+    db.execute("INSERT INTO events(job_id, at, level, message) VALUES (?,?,?,?)",
+               (job_id, now(), level, message))
+
+
+def submit(batch, selected, settings):
+    ids = []
+    stamp = now()
+    with database() as db:
+        for name, path in selected.items():
+            job_id = uuid4().hex
+            db.execute("""INSERT INTO jobs(id,batch,template,revision,settings,status,created_at,updated_at)
+                          VALUES (?,?,?,?,?,'pending',?,?)""",
+                       (job_id, batch, name, revision(path), json.dumps(settings), stamp, stamp))
+            event(db, job_id, "任务已保存，等待投递")
+            ids.append(job_id)
+    return ids
+
+
+def next_delivery():
+    with database() as db:
+        db.execute("BEGIN IMMEDIATE")
+        row = db.execute("""SELECT id FROM jobs WHERE status='pending' AND next_dispatch <= ?
+                            ORDER BY created_at, rowid LIMIT 1""", (time.time(),)).fetchone()
+        if row:
+            db.execute("UPDATE jobs SET next_dispatch=? WHERE id=?", (time.time() + 60, row["id"]))
+            return row["id"]
+
+
+def transition(db, job_id, status, message, level="info", *, expected=None):
+    query = "UPDATE jobs SET status=?, detail=?, updated_at=? WHERE id=?"
+    values = [status, message, now(), job_id]
+    if expected:
+        query += " AND status=?"
+        values.append(expected)
+    if db.execute(query, values).rowcount:
+        event(db, job_id, message, level)
+
+
+def dispatch_error(job_id):
+    message = "Redis 暂时不可用，稍后自动重新投递"
+    with database() as db:
+        row = db.execute("SELECT detail FROM jobs WHERE id=? AND status='pending'", (job_id,)).fetchone()
+        if row:
+            db.execute("UPDATE jobs SET next_dispatch=?, detail=? WHERE id=?",
+                       (time.time() + 15, message, job_id))
+            if row["detail"] != message:
+                event(db, job_id, message, "warning")
+
+
+def get(job_id):
+    with database() as db:
+        row = db.execute("SELECT * FROM jobs WHERE id=?", (job_id,)).fetchone()
+        return dict(row) if row else None
+
+
+def page(kind, offset, limit):
+    with database() as db:
+        if kind == "logs":
+            table = "events e JOIN jobs j ON j.id=e.job_id"
+            fields = "e.id,e.job_id,j.template,e.at,e.level,e.message"
+            order = "e.id DESC"
+        else:
+            table = "jobs" + (" WHERE status='done'" if kind == "outputs" else "")
+            fields = "id,template,status,created_at,updated_at,detail"
+            order = "created_at DESC, rowid DESC"
+        count = db.execute(f"SELECT count(*) FROM {table}").fetchone()[0]
+        rows = db.execute(f"SELECT {fields} FROM {table} ORDER BY {order} LIMIT ? OFFSET ?",
+                          (limit, offset)).fetchall()
+        return {"items": [dict(row) for row in rows], "total": count}

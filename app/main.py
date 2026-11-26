@@ -1,64 +1,141 @@
-import json
-import mimetypes
+import re
+import secrets
 from contextlib import asynccontextmanager
-from hashlib import sha256
-from threading import Lock
+from threading import Event, Thread
+from typing import Annotated
+from uuid import UUID, uuid4
 
-from fastapi import FastAPI, Request
-from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi import FastAPI, File, Form, HTTPException, Query, Request, UploadFile
+from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
+from PIL import Image, UnidentifiedImageError
 
-from app.api.routes.photoshop import router
-from app.api.routes.renders import router as renders_router
-from app.api.routes.templates import router as templates_router
-from app.core.config import PROJECT_ROOT, load_settings
-from app.core.preview_models import PREVIEW_MODELS
-from app.services.photoshop import PhotoshopControlError, PhotoshopService
-from app.services.renders import RenderService
-from app.services.templates import load_templates
+from app import store
+from app.config import DATA, ROOT, TOKEN, templates
+from app.worker import dispatch
 
-
-ADMIN_ROOT = PROJECT_ROOT / "app" / "admin"
-mimetypes.add_type("text/javascript", ".js")
+STATIC = ROOT / "app" / "static"
+LIMIT = 50 * 1024 * 1024
 
 
 @asynccontextmanager
-async def lifespan(app: FastAPI):
-    settings = load_settings()
-    app.state.settings = settings
-    app.state.photoshop = PhotoshopService(settings.photoshop_exe)
-    app.state.templates = load_templates(settings.template_dir)
-    app.state.template_lock = Lock()
-    app.state.renders = RenderService(PROJECT_ROOT / "data" / "renders", settings.template_dir,
-                                      app.state.template_lock, app.state.photoshop)
-    app.state.template_inspections = {}
+async def lifespan(app):
+    if not TOKEN.strip():
+        raise RuntimeError("请在 .env 中设置 PHOTOSHOP_API_TOKEN")
+    store.initialize()
+    stop = Event()
+    thread = Thread(target=dispatch, args=(stop,), name="mockup-dispatch", daemon=True)
+    thread.start()
     try:
         yield
     finally:
-        app.state.renders.close()
+        stop.set()
+        thread.join(timeout=8)
 
 
-app = FastAPI(title="Photoshop Control", lifespan=lifespan)
-app.include_router(router)
-app.include_router(templates_router)
-app.include_router(renders_router)
-app.mount("/admin-assets", StaticFiles(directory=ADMIN_ROOT), name="admin_assets")
+app = FastAPI(title="样机工作台", lifespan=lifespan)
+
+
+@app.middleware("http")
+async def protect(request: Request, call_next):
+    if request.url.path.startswith("/api/"):
+        scheme, _, token = request.headers.get("authorization", "").partition(" ")
+        if (scheme.lower() != "bearer" or not token
+                or not secrets.compare_digest(token.encode(), TOKEN.encode())):
+            return JSONResponse({"detail": "请输入有效的访问令牌"}, status_code=401,
+                                headers={"WWW-Authenticate": "Bearer"})
+    return await call_next(request)
 
 
 @app.get("/", include_in_schema=False)
-def admin() -> HTMLResponse:
-    html = (ADMIN_ROOT / "index.html").read_text(encoding="utf-8")
-    for asset in ("admin.css", "admin.js", "preview-3d.js"):
-        version = sha256((ADMIN_ROOT / asset).read_bytes()).hexdigest()[:16]
-        url = f"./admin-assets/{asset}"
-        html = html.replace(url, f"{url}?v={version}")
-    library = "./admin-assets/vendor/three/"
-    imports = {"imports": {"three": library + "build/three.module.min.js", "three/addons/": library + "examples/jsm/"}}
-    html = html.replace("__PREVIEW_IMPORTS__", json.dumps(imports))
-    html = html.replace("__PREVIEW_MODELS__", json.dumps(PREVIEW_MODELS).replace("<", "\\u003c"))
-    return HTMLResponse(html, headers={"Cache-Control": "no-store"})
+def index():
+    return FileResponse(STATIC / "index.html", headers={"Cache-Control": "no-cache"})
 
 
-@app.exception_handler(PhotoshopControlError)
-async def handle_photoshop_error(_request: Request, error: PhotoshopControlError) -> JSONResponse:
-    return JSONResponse(status_code=error.status_code, content={"detail": str(error)})
+app.mount("/static", StaticFiles(directory=STATIC), name="static")
+
+
+@app.get("/api/templates")
+def get_templates():
+    return {"items": list(templates())}
+
+
+def save_image(upload, folder, stem):
+    temp = folder / (stem + ".upload")
+    size = 0
+    with temp.open("xb") as stream:
+        while chunk := upload.file.read(1024 * 1024):
+            size += len(chunk)
+            if size > LIMIT:
+                raise HTTPException(413, "单张图片最大 50 MB")
+            stream.write(chunk)
+    try:
+        with Image.open(temp, formats=["JPEG", "PNG"]) as image:
+            ext = ".png" if image.format == "PNG" else ".jpg"
+            image.verify()
+    except (OSError, ValueError, SyntaxError, Image.DecompressionBombError, UnidentifiedImageError) as exc:
+        raise HTTPException(422, "请上传有效的 PNG 或 JPEG 图片") from exc
+    target = folder / (stem + ext)
+    temp.rename(target)
+    return target.name
+
+
+@app.post("/api/jobs", status_code=202)
+def submit(
+    b_color: Annotated[str, Form()],
+    background_color: Annotated[str, Form()],
+    template: Annotated[str | None, Form()] = None,
+    a_image: Annotated[UploadFile | None, File()] = None,
+    pillow_image: Annotated[UploadFile | None, File()] = None,
+):
+    colors = {"B面": b_color, "背景": background_color}
+    if not all(re.fullmatch(r"#[0-9a-fA-F]{6}", color) for color in colors.values()):
+        raise HTTPException(422, "颜色应为六位十六进制色值")
+    available = templates()
+    if template and template not in available:
+        raise HTTPException(404, "样机已移除，请刷新后重新选择")
+    selected = {template: available[template]} if template else available
+    if not selected:
+        raise HTTPException(422, "templates 目录中没有 PSD 或 PSB 样机")
+    batch = uuid4().hex
+    folder = DATA / "inputs" / batch
+    folder.mkdir()
+    try:
+        images = {}
+        for name, upload, stem in (("A面", a_image, "a"), ("枕套", pillow_image, "pillow")):
+            if upload is not None:
+                images[name] = save_image(upload, folder, stem)
+        ids = store.submit(batch, selected, {"images": images, "colors": colors})
+    except Exception:
+        for path in folder.iterdir():
+            path.unlink()
+        folder.rmdir()
+        raise
+    return {"ids": ids, "count": len(ids)}
+
+
+@app.get("/api/jobs")
+def jobs(offset: int = Query(0, ge=0), limit: int = Query(36, ge=1, le=120)):
+    return store.page("jobs", offset, limit)
+
+
+@app.get("/api/logs")
+def logs(offset: int = Query(0, ge=0), limit: int = Query(36, ge=1, le=120)):
+    return store.page("logs", offset, limit)
+
+
+@app.get("/api/outputs")
+def outputs(offset: int = Query(0, ge=0), limit: int = Query(24, ge=1, le=120)):
+    return store.page("outputs", offset, limit)
+
+
+@app.get("/api/outputs/{job_id}/{kind}")
+def output_image(job_id: UUID, kind: str):
+    job = store.get(job_id.hex)
+    if not job or job["status"] != "done" or kind not in {"thumbnail", "image", "download"}:
+        raise HTTPException(404, "找不到输出图")
+    path = DATA / "outputs" / job_id.hex / ("thumb.png" if kind == "thumbnail" else "render.png")
+    if not path.is_file():
+        raise HTTPException(404, "输出文件已移除")
+    name = f"{job['template'].rsplit('/', 1)[-1].rsplit('.', 1)[0]}-{job_id.hex[:8]}.png"
+    return FileResponse(path, media_type="image/png", filename=name if kind == "download" else None)

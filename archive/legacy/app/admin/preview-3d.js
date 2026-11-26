@@ -3,20 +3,39 @@ import {
     SRGBColorSpace, Vector2, Vector3, WebGLRenderer,
 } from "three";
 import {GLTFLoader} from "three/addons/loaders/GLTFLoader.js";
-import {OrbitControls} from "three/addons/controls/OrbitControls.js";
 import {CanvasPreviewRenderer} from "./preview-canvas.js";
 
-function artworkTexture(image, aspect, baseColor) {
+function surfaceTexture(image, aspect, background) {
     const canvas = document.createElement("canvas");
     canvas.width = Math.max(1, Math.round(1024 * Math.min(aspect, 1)));
     canvas.height = Math.max(1, Math.round(1024 / Math.max(aspect, 1)));
     const context = canvas.getContext("2d");
-    context.fillStyle = baseColor;
+    const {width: w, height: h} = canvas;
+    context.fillStyle = background ? "#f2f3f4" : "#fafafa";
     context.fillRect(0, 0, canvas.width, canvas.height);
-    const width = Math.min(image.naturalWidth, image.naturalHeight * aspect);
-    const height = Math.min(image.naturalHeight, image.naturalWidth / aspect);
-    context.drawImage(image, (image.naturalWidth - width) / 2, (image.naturalHeight - height) / 2,
-        width, height, 0, 0, canvas.width, canvas.height);
+    if (image) {
+        const width = Math.min(image.naturalWidth, image.naturalHeight * aspect);
+        const height = Math.min(image.naturalHeight, image.naturalWidth / aspect);
+        context.drawImage(image, (image.naturalWidth - width) / 2, (image.naturalHeight - height) / 2,
+            width, height, 0, 0, w, h);
+    } else if (!background) {
+        // UV isolines follow the folds of the mesh without exposing its triangle diagonals.
+        const spacing = Math.max(w, h) / 10;
+        context.beginPath();
+        for (let x = spacing; x < w; x += spacing) { context.moveTo(x, 0); context.lineTo(x, h); }
+        for (let y = spacing; y < h; y += spacing) { context.moveTo(0, y); context.lineTo(w, y); }
+        context.strokeStyle = "#737985";
+        context.lineWidth = 2.7;
+        context.stroke();
+    }
+    context.strokeStyle = background ? "#b6bac1" : "#363b46";
+    context.lineWidth = background ? 3 : 8;
+    context.strokeRect(0, 0, w, h);
+    if (!background) {
+        context.lineWidth = 2;
+        context.setLineDash([9, 6]);
+        context.strokeRect(12, 12, w - 24, h - 24);
+    }
     const texture = new CanvasTexture(canvas);
     texture.colorSpace = SRGBColorSpace;
     texture.flipY = false;
@@ -42,6 +61,18 @@ export async function loadPreview3D(host, model, pick, unavailable, preferCanvas
     const geometries = new Set(), materials = new Set(), textures = new Set();
     const parts = new Map(model.parts.map((part) => [part.key, part]));
     const surfaces = [], meshes = [], bounds = new Box3();
+    // Display both sides of a reversible model in the same fixed view.
+    if (model.parts.some((part) => part.view === "underside")) {
+        const size = new Box3().setFromObject(object).getSize(new Vector3());
+        object.traverse((mesh) => {
+            if (!mesh.isMesh) return;
+            const part = parts.get(mesh.userData.previewPart || mesh.name);
+            if (!part) return;
+            const underside = part.view === "underside";
+            if (underside) mesh.rotateX(Math.PI);
+            mesh.position.z += (underside ? 1 : -1) * size.z * .58;
+        });
+    }
     object.traverse((mesh) => {
         if (!mesh.isMesh) return;
         geometries.add(mesh.geometry);
@@ -60,8 +91,8 @@ export async function loadPreview3D(host, model, pick, unavailable, preferCanvas
         const copies = list.map((material) => {
             const copy = material.clone();
             materials.add(copy);
-            surfaces.push({key, material: copy, color: copy.color.clone(), map: copy.map,
-                emissive: copy.emissive?.clone()});
+            copy.color.set(0xffffff);
+            surfaces.push({key, material: copy});
             return copy;
         });
         mesh.material = Array.isArray(mesh.material) ? copies : copies[0];
@@ -92,8 +123,8 @@ export async function loadPreview3D(host, model, pick, unavailable, preferCanvas
     host.replaceChildren(canvas);
 
     const scene = new Scene();
-    const fill = new HemisphereLight(0xfffbf6, 0x9d91b6, 1.6);
-    const key = new DirectionalLight(0xfff0dc, 2.1);
+    const fill = new HemisphereLight(0xffffff, 0xc8cbd2, 1.55);
+    const key = new DirectionalLight(0xffffff, 1.5);
     key.position.set(-2, 4, 3);
     scene.add(object, fill, key);
     const camera = new PerspectiveCamera(36, 1, .01, 100);
@@ -112,14 +143,7 @@ export async function loadPreview3D(host, model, pick, unavailable, preferCanvas
         key.shadow.mapSize.set(1024, 1024);
         key.shadow.normalBias = .018;
     }
-    camera.position.copy(center).add(new Vector3(span * .45, span * 1.05, span * 1.38));
-    const controls = new OrbitControls(camera, canvas);
-    controls.target.copy(center);
-    controls.enablePan = false;
-    controls.minDistance = span * .55;
-    controls.maxDistance = span * 3.5;
-    if (parts.has("background")) controls.maxPolarAngle = Math.PI / 2 - .06;
-    controls.update();
+    const viewOffset = new Vector3(.64, 1.46, 1.18).multiplyScalar(span);
 
     let frame = null;
     const render = () => {
@@ -135,12 +159,13 @@ export async function loadPreview3D(host, model, pick, unavailable, preferCanvas
             }
         });
     };
-    controls.addEventListener("change", render);
     const observer = new ResizeObserver(() => {
         const {clientWidth: width, clientHeight: height} = host;
         if (!width || !height) return;
         renderer.setSize(width, height, false);
         camera.aspect = width / height;
+        camera.position.copy(center).addScaledVector(viewOffset, Math.max(1, 1 / camera.aspect));
+        camera.lookAt(center);
         camera.updateProjectionMatrix();
         render();
     });
@@ -160,7 +185,7 @@ export async function loadPreview3D(host, model, pick, unavailable, preferCanvas
         down = event.isPrimary && event.button === 0 ? {id: event.pointerId, x: event.clientX, y: event.clientY} : null;
     });
     canvas.addEventListener("pointermove", (event) => {
-        if (!event.buttons && event.pointerType === "mouse") canvas.style.cursor = partAt(event) ? "pointer" : "grab";
+        if (!event.buttons && event.pointerType === "mouse") canvas.style.cursor = partAt(event) ? "pointer" : "default";
         if (down && Math.hypot(event.clientX - down.x, event.clientY - down.y) > 6) down = null;
     });
     canvas.addEventListener("pointercancel", () => { down = null; });
@@ -172,32 +197,25 @@ export async function loadPreview3D(host, model, pick, unavailable, preferCanvas
     });
     const lost = (event) => { event.preventDefault(); unavailable(); };
     if (renderer.isWebGLRenderer) canvas.addEventListener("webglcontextlost", lost);
-    let texture = null, currentSlot = null, currentArtwork = null;
+    const artworkTextures = new Map();
     return {
         mode: renderer.isWebGLRenderer ? "webgl" : "canvas",
-        show(slot, art) {
-            if (slot === currentSlot && art === currentArtwork) return;
-            const changedSlot = slot !== currentSlot;
-            currentSlot = slot;
-            currentArtwork = art;
-            texture?.dispose();
-            const surface = surfaces.find(({key}) => key === slot);
-            texture = surface && art ? artworkTexture(art, parts.get(slot).aspect, surface.color.getStyle()) : null;
-            for (const {key, material, color, map, emissive} of surfaces) {
+        show(slot, artworks) {
+            for (const {key, material} of surfaces) {
                 const selected = key === slot;
-                material.map = (selected && texture) || map;
-                material.color.copy(color);
-                if (selected && texture) material.color.set(0xffffff);
-                if (emissive) {
-                    material.emissive.copy(emissive);
-                    if (selected && !texture) material.emissive.set(0x35234b);
+                const image = artworks.get(key)?.image;
+                const art = image?.naturalWidth ? image : null;
+                let cached = artworkTextures.get(key);
+                if (!cached || cached.image !== art) {
+                    cached?.texture.dispose();
+                    cached = {image: art, texture: surfaceTexture(art, parts.get(key).aspect, key === "background")};
+                    artworkTextures.set(key, cached);
                 }
-                material.needsUpdate = true;
-            }
-            if (changedSlot && slot && model.parts.some((part) => part.view === "underside")) {
-                const sign = parts.get(slot)?.view === "underside" ? -1 : 1;
-                camera.position.y = center.y + sign * Math.max(Math.abs(camera.position.y - center.y), span * .6);
-                controls.update();
+                if (material.map !== cached.texture) {
+                    material.map = cached.texture;
+                    material.needsUpdate = true;
+                }
+                material.color.set(selected && !art ? 0xdedcf0 : 0xffffff);
             }
             render();
         },
@@ -205,8 +223,7 @@ export async function loadPreview3D(host, model, pick, unavailable, preferCanvas
             observer.disconnect();
             if (frame !== null) cancelAnimationFrame(frame);
             canvas.removeEventListener("webglcontextlost", lost);
-            controls.dispose();
-            texture?.dispose();
+            artworkTextures.forEach(({texture}) => texture.dispose());
             releaseModel();
             key.shadow.dispose();
             renderer.dispose?.();

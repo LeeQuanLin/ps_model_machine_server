@@ -557,12 +557,13 @@ main {
 }
 
 .proof-stage {
+    background:#f6f7f8;
     border-radius:8px;
     min-height:322px;
     flex:1;
     display:grid;
     place-items:center;
-    padding:21px;
+    padding:0;
 }
 
 .proof-stage::before,.proof-stage::after {
@@ -608,25 +609,15 @@ main {
     display:block;
     width:100%;
     height:100%;
-    cursor:grab;
-    touch-action:none;
+    touch-action:manipulation;
 }
 
-.proof-canvas canvas:active { cursor:grabbing; }
-
-.preview-orbit-hint {
-    position:absolute;
-    bottom:10px;
-    left:50%;
-    transform:translateX(-50%);
-    padding:4px 10px;
-    border-radius:5px;
-    background:#f8f6fcdd;
-    color:var(--muted);
-    font-size:12px;
-    white-space:nowrap;
-    pointer-events:none;
-}
+.artwork-heading { display:flex; align-items:baseline; justify-content:space-between; gap:8px; }
+.copy-artwork { margin-top:12px; font-size:13px; }
+.copy-artwork summary { cursor:pointer; color:var(--accent-strong); }
+.copy-targets { display:flex; flex-wrap:wrap; gap:8px 14px; margin:12px 0; }
+.copy-targets label { display:flex; align-items:center; gap:4px; cursor:pointer; }
+.copy-targets input { width:auto; height:auto; margin:0; accent-color:var(--accent); }
 
 .preview-parts {
     display:flex;
@@ -636,6 +627,10 @@ main {
 }
 
 .preview-part {
+    display:flex;
+    align-items:center;
+    gap:8px;
+    text-align:left;
     color:var(--accent-strong);
     border:1px solid #c9bee4;
     background:var(--paper);
@@ -644,6 +639,14 @@ main {
     font-size:12px;
     cursor:pointer;
 }
+.part-swatch {
+    width:26px; height:26px; border-radius:4px; border:1px solid #c7c9cf;
+    background:repeating-linear-gradient(135deg,#f6f7f8 0 5px,#e2e4e7 5px 6px);
+    background-size:cover;
+    background-position:center;
+}
+.part-description { display:grid; gap:1px; }
+.part-state { font-size:10px; opacity:.8; }
 
 .preview-part.is-unconfigured { color:var(--muted); border-style:dashed; }
 .preview-part:hover { background:var(--accent-wash); }
@@ -652,11 +655,12 @@ main {
 .proof-part[data-slot] { cursor:pointer; }
 
 .proof-surface {
-    stroke:#76668f;
-    stroke-opacity:.42;
+    fill:#fafafa;
+    stroke:#4c515c;
     stroke-width:1.2px;
     vector-effect:non-scaling-stroke;
 }
+.proof-depth { fill:#d5d7dc; stroke:#4c515c; vector-effect:non-scaling-stroke; }
 
 .proof-artwork { opacity:.9; pointer-events:none; }
 

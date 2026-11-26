@@ -30,11 +30,16 @@
             <label class="field-label" for="template-select">样机模板</label>
             <select id="template-select" required><option value="">请选择样机</option></select>
             <p class="slot-selection" id="slot-selection" aria-live="polite"></p>
-            <label class="field-label" for="artwork-input">印花图片</label>
+            <div class="artwork-heading"><label class="field-label" for="artwork-input">印花图片</label><button class="text-button" type="button" id="clear-artwork" hidden>移除此面贴图</button></div>
             <label class="drop-zone" id="drop-zone" for="artwork-input">
-              <input id="artwork-input" type="file" accept="image/png,image/jpeg" required>
+              <input id="artwork-input" type="file" accept="image/png,image/jpeg">
               <span class="upload-icon" aria-hidden="true">↑</span><strong id="upload-text">点击选择，或拖放图片</strong><small id="upload-meta">PNG、JPEG · 最大 50 MB</small>
             </label>
+            <details id="copy-artwork" class="copy-artwork" hidden>
+              <summary>将这张图用于其他面</summary>
+              <div id="copy-targets" class="copy-targets"></div>
+              <button type="button" class="button secondary" id="apply-artwork" disabled>应用到所选面</button>
+            </details>
             <button class="button primary render-action" type="submit" id="render-submit" disabled><span aria-hidden="true">✦</span> 生成 PNG</button>
           </form>
           <section class="proof panel" aria-labelledby="proof-title">
