@@ -11,10 +11,8 @@ from celery import Celery
 from PIL import Image
 
 from app import store
-from app.config import BROKER, DATA, QUEUE, revision, templates
+from app.config import BROKER, DATA, PHOTOSHOP_RESTART_AFTER_TASKS, QUEUE, revision, templates
 from 贴样机 import render
-
-RESTART_INTERVAL = 10
 
 celery = Celery("mockup", broker=BROKER)
 celery.conf.update(task_default_queue=QUEUE, task_ignore_result=True, worker_prefetch_multiplier=1,
@@ -57,7 +55,8 @@ def save_count(count):
 
 
 def restart_if_due(job_id):
-    if processed_count() < RESTART_INTERVAL:
+    count = processed_count()
+    if count < PHOTOSHOP_RESTART_AFTER_TASKS:
         return True
     script = Path(__file__).with_name("restart_photoshop.ps1")
     try:
@@ -73,7 +72,7 @@ def restart_if_due(job_id):
         return False
     save_count(0)
     with store.database() as db:
-        store.event(db, job_id, f"已处理 {RESTART_INTERVAL} 次，Photoshop 已重启：{result.stdout.strip()}")
+        store.event(db, job_id, f"已处理 {count} 次，Photoshop 已重启：{result.stdout.strip()}")
     return True
 
 

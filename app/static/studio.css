@@ -270,9 +270,26 @@ h3 {
   padding: 9px;
   min-height: 38px;
 }
-.file:hover {
+.file:hover,
+.file.dragging {
   border-color: var(--primary);
   background: #eff6ef;
+}
+.file.dragging {
+  outline: 2px solid var(--primary);
+  outline-offset: 2px;
+}
+.output-name {
+  display: grid;
+  gap: 6px;
+  padding: 0 18px 16px;
+  font-size: 13px;
+}
+.output-name input {
+  min-width: 0;
+  padding: 9px 12px;
+  border: 1px solid #cdd5d1;
+  border-radius: 6px;
 }
 .file span:nth-child(2) {
   overflow: hidden;

@@ -53,7 +53,13 @@ def event(db, job_id, message, level="info"):
                (job_id, now(), level, message))
 
 
-def submit(batch, selected, settings, *, sequential=False):
+def download_name(job):
+    custom = json.loads(job["settings"]).get("download_name")
+    stem = job["template"].rsplit("/", 1)[-1].rsplit(".", 1)[0]
+    return custom or f"{stem}-{job['id'][:8]}.png"
+
+
+def submit(batch, selected, settings, *, sequential=False, output_name=""):
     ids = []
     stamp = now()
     with database() as db:
@@ -66,11 +72,15 @@ def submit(batch, selected, settings, *, sequential=False):
             name = names[index % len(names)]
             selected = {name: selected[name]}
             db.execute("INSERT OR REPLACE INTO template_rotation(id,last_template) VALUES (1,?)", (name,))
-        for name, path in selected.items():
+        for index, (name, path) in enumerate(selected.items(), start=1):
             job_id = uuid4().hex
+            job_settings = settings
+            if output_name:
+                suffix = f"-{index:02d}" if len(selected) > 1 else ""
+                job_settings = {**settings, "download_name": f"{output_name}{suffix}.png"}
             db.execute("""INSERT INTO jobs(id,batch,template,revision,settings,status,created_at,updated_at)
                           VALUES (?,?,?,?,?,'pending',?,?)""",
-                       (job_id, batch, name, revision(path), json.dumps(settings), stamp, stamp))
+                       (job_id, batch, name, revision(path), json.dumps(job_settings), stamp, stamp))
             event(db, job_id, "任务已保存，等待投递")
             ids.append(job_id)
     return ids

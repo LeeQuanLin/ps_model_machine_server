@@ -1,17 +1,19 @@
 import re
 import secrets
 from contextlib import asynccontextmanager
+from html import escape
+from pathlib import PureWindowsPath
 from threading import Event, Thread
 from typing import Annotated
 from uuid import UUID, uuid4
 
 from fastapi import FastAPI, File, Form, HTTPException, Query, Request, UploadFile
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from PIL import Image, UnidentifiedImageError
 
 from app import store
-from app.config import DATA, ROOT, TOKEN, templates
+from app.config import DATA, ROOT, TOKEN, b_side_presets, templates
 from app.worker import dispatch
 
 STATIC = ROOT / "app" / "static"
@@ -22,6 +24,7 @@ LIMIT = 50 * 1024 * 1024
 async def lifespan(app):
     if not TOKEN.strip():
         raise RuntimeError("请在 .env 中设置 PHOTOSHOP_API_TOKEN")
+    app.state.b_side_presets = b_side_presets()
     store.initialize()
     stop = Event()
     thread = Thread(target=dispatch, args=(stop,), name="mockup-dispatch", daemon=True)
@@ -48,8 +51,14 @@ async def protect(request: Request, call_next):
 
 
 @app.get("/", include_in_schema=False)
-def index():
-    return FileResponse(STATIC / "index.html", headers={"Cache-Control": "no-cache"})
+def index(request: Request):
+    buttons = "".join(
+        f'<button type="button" class="swatch" data-color="{color}" '
+        f'title="{escape(name)}" aria-label="{escape(name)}"></button>'
+        for name, color in request.app.state.b_side_presets
+    )
+    html = (STATIC / "index.html").read_text(encoding="utf-8")
+    return HTMLResponse(html.replace("<!-- B_SIDE_SWATCHES -->", buttons), headers={"Cache-Control": "no-cache"})
 
 
 app.mount("/static", StaticFiles(directory=STATIC), name="static")
@@ -87,7 +96,15 @@ def submit(
     template: Annotated[str | None, Form(description="留空选择全部；random 随机一款；sequential 顺序一款；也可传模板相对路径")] = None,
     a_image: Annotated[UploadFile | None, File()] = None,
     pillow_image: Annotated[UploadFile | None, File()] = None,
+    output_name: Annotated[str | None, Form()] = None,
 ):
+    name = (output_name or "").strip()
+    if name:
+        if name.lower().endswith(".png"):
+            name = name[:-4]
+        if (not name or name.endswith((" ", ".")) or re.search(r'[<>:"/\\|?*\x00-\x1f]', name)
+                or PureWindowsPath(name + ".png").is_reserved()):
+            raise HTTPException(422, "请输入有效的输出文件名，不能包含路径或 Windows 文件名禁用字符")
     colors = {"B面": b_color, "背景": background_color}
     if not all(re.fullmatch(r"#[0-9a-fA-F]{6}", color) for color in colors.values()):
         raise HTTPException(422, "颜色应为六位十六进制色值")
@@ -100,16 +117,20 @@ def submit(
         if template not in available:
             raise HTTPException(404, "样机已移除，请刷新后重新选择")
         available = {template: available[template]}
+    count = 1 if template == "sequential" else len(available)
+    longest_suffix = f"-{count:02d}.png" if count > 1 else ".png"
+    if len((name + longest_suffix).encode("utf-8")) > 255:
+        raise HTTPException(422, "输出文件名过长，请缩短后再提交")
     batch = uuid4().hex
     folder = DATA / "inputs" / batch
     folder.mkdir()
     try:
         images = {}
-        for name, upload, stem in (("A面", a_image, "a"), ("枕套", pillow_image, "pillow")):
+        for layer, upload, stem in (("A面", a_image, "a"), ("枕套", pillow_image, "pillow")):
             if upload is not None:
-                images[name] = save_image(upload, folder, stem)
+                images[layer] = save_image(upload, folder, stem)
         ids = store.submit(batch, available, {"images": images, "colors": colors},
-                           sequential=template == "sequential")
+                           sequential=template == "sequential", output_name=name)
     except Exception:
         for path in folder.iterdir():
             path.unlink()
@@ -141,5 +162,5 @@ def output_image(job_id: UUID, kind: str):
     path = DATA / "outputs" / job_id.hex / ("thumb.png" if kind == "thumbnail" else "render.png")
     if not path.is_file():
         raise HTTPException(404, "输出文件已移除")
-    name = f"{job['template'].rsplit('/', 1)[-1].rsplit('.', 1)[0]}-{job_id.hex[:8]}.png"
+    name = store.download_name(job)
     return FileResponse(path, media_type="image/png", filename=name if kind == "download" else None)

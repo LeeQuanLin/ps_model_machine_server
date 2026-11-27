@@ -1,4 +1,5 @@
 import os
+import re
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -10,6 +11,24 @@ DATA = Path(os.environ.get("MOCKUP_DATA_DIR", ROOT / "data" / "studio")).resolve
 BROKER = os.environ.get("CELERY_BROKER_URL", "redis://127.0.0.1:6379/0")
 TOKEN = os.environ.get("PHOTOSHOP_API_TOKEN", "")
 QUEUE = "photoshop.mockups"
+_restart_tasks = os.environ.get("PHOTOSHOP_RESTART_AFTER_TASKS", "10").strip()
+if not _restart_tasks.isdecimal() or int(_restart_tasks) < 1:
+    raise ValueError("PHOTOSHOP_RESTART_AFTER_TASKS 必须是大于 0 的整数")
+PHOTOSHOP_RESTART_AFTER_TASKS = int(_restart_tasks)
+DEFAULT_B_SIDE_PRESETS = "雾蓝:#A4B6C9,米白:#E9E2D4,豆绿:#A3B59C,藕粉:#D7B0AC,灰紫:#B9AFC5,炭灰:#535B60"
+
+
+def b_side_presets():
+    presets = []
+    for item in os.environ.get("B_SIDE_PRESET_COLORS", DEFAULT_B_SIDE_PRESETS).split(","):
+        if not item.strip():
+            continue
+        name, _, value = item.rpartition(":")
+        color = value.strip()
+        if not re.fullmatch(r"#[0-9a-fA-F]{6}", color):
+            raise ValueError(f"B_SIDE_PRESET_COLORS 配置无效：{item!r}，请使用 名称:#RRGGBB 或 #RRGGBB")
+        presets.append((name.strip() or color, color.lower()))
+    return presets
 
 
 def templates():

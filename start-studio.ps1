@@ -69,7 +69,7 @@ finally:
     }
 
     if ($apiState -eq 'start-api') {
-        $api = Start-StudioProcess 'api' @('-m','uvicorn','app.main:app','--host','127.0.0.1','--port',"$Port")
+        $api = Start-StudioProcess 'api' @('-m','uvicorn','app.main:app','--host','0.0.0.0','--port',"$Port")
         $ready = $false
         for ($i = 0; $i -lt 25; $i++) {
             if ($api.HasExited) { throw "API exited. See $logDir\api-$stamp.err.log" }

@@ -45,7 +45,7 @@
                 <small>图案</small>
               </div>
               <label class="file" for="art"
-                ><span data-icon="upload"></span><span id="artName">选择 A 面图片</span
+                ><span data-icon="upload"></span><span id="artName">点击或拖入 A 面图片</span
                 ><input id="art" type="file" accept="image/png,image/jpeg" /></label
               ><button id="clearArt" class="textbtn" hidden>移除图片</button>
             </div>
@@ -55,9 +55,9 @@
                 <h3>B 面</h3>
                 <small>纯色</small>
               </div>
-              <div id="swatches" class="swatches" aria-label="B 面预设颜色"></div>
+              <div id="swatches" class="swatches" aria-label="B 面预设颜色"><!-- B_SIDE_SWATCHES --></div>
               <label class="picker"
-                ><input type="color" id="bColor" value="#a4b6c9" /><span id="bHex"></span
+                ><input type="color" id="bColor" /><span id="bHex"></span
                 ><span class="muted">自选颜色</span></label
               >
             </div>
@@ -68,7 +68,7 @@
                 <small>图案</small>
               </div>
               <label class="file" for="pillow"
-                ><span data-icon="upload"></span><span id="pillowName">选择枕套图片</span
+                ><span data-icon="upload"></span><span id="pillowName">点击或拖入枕套图片</span
                 ><input id="pillow" type="file" accept="image/png,image/jpeg" /></label
               ><button id="clearPillow" class="textbtn" hidden>移除图片</button>
             </div>
@@ -94,6 +94,10 @@
               <span class="fine">4 个图层</span>
             </div>
             <div class="tiles" id="tiles"></div>
+            <label class="output-name">
+              输出文件名
+              <input id="outputName" type="text" placeholder="选填，默认使用样机名和任务 ID" />
+            </label>
             <footer class="submit-row">
               <span class="fine" id="scope"></span
               ><button class="primary" id="submit"><span data-icon="play"></span>提交到任务队列</button>

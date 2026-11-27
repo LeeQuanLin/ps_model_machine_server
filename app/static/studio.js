@@ -185,7 +185,7 @@ function sync() {
       }
       caption.textContent = asset ? asset.file.name : "待上传";
       sample.setAttribute("aria-label", "选择" + label + "图片");
-      $(id + "Name").textContent = asset ? asset.file.name : "选择" + label + "图片";
+      $(id + "Name").textContent = asset ? asset.file.name : "点击或拖入" + label + "图片";
       $(id === "art" ? "clearArt" : "clearPillow").hidden = !asset;
     } else {
       const color = $(id === "b" ? "bColor" : "bgColor").value;
@@ -216,29 +216,29 @@ for (const [id, label] of slots) {
   figure.append(sample, cap);
   $("tiles").append(figure);
 }
-for (const [name, color] of [
-  ["雾蓝", "#a4b6c9"],
-  ["米白", "#e9e2d4"],
-  ["豆绿", "#a3b59c"],
-  ["藕粉", "#d7b0ac"],
-  ["灰紫", "#b9afc5"],
-  ["炭灰", "#535b60"],
-]) {
-  const b = node("button", undefined, "swatch");
+const swatches = $("swatches").children;
+if (swatches.length) $("bColor").value = swatches[0].dataset.color;
+for (const b of swatches) {
+  const color = b.dataset.color;
   b.style.backgroundColor = color;
-  b.dataset.color = color;
-  b.title = name;
-  b.setAttribute("aria-label", name);
   b.onclick = () => {
     $("bColor").value = color;
     sync();
   };
-  $("swatches").append(b);
+}
+function clearImage(id) {
+  versions[id]++;
+  loading[id] = false;
+  if (assets[id]) URL.revokeObjectURL(assets[id].url);
+  assets[id] = null;
+  $(id).value = "";
+  if (id === "art") theme = null;
 }
 for (const id of Object.keys(assets)) {
-  $(id).onchange = async () => {
-    const file = $(id).files[0];
-    if (!file) return;
+  const input = $(id);
+  const dropZone = input.closest(".file");
+  async function loadFile(file) {
+    if (!file || busy) return;
     const version = ++versions[id];
     loading[id] = true;
     scope();
@@ -266,14 +266,27 @@ for (const id of Object.keys(assets)) {
         sync();
       }
     }
+  }
+  input.onchange = () => loadFile(input.files[0]);
+  dropZone.ondragover = (event) => {
+    if (!event.dataTransfer.types.includes("Files")) return;
+    event.preventDefault();
+    event.dataTransfer.dropEffect = busy ? "none" : "copy";
+    dropZone.classList.toggle("dragging", !busy);
+  };
+  dropZone.ondragleave = (event) => {
+    if (!dropZone.contains(event.relatedTarget)) dropZone.classList.remove("dragging");
+  };
+  dropZone.ondrop = (event) => {
+    event.preventDefault();
+    dropZone.classList.remove("dragging");
+    if (busy) return;
+    const files = event.dataTransfer.files;
+    if (files.length !== 1) return notice("每个图层请拖入一张图片");
+    loadFile(files[0]);
   };
   $(id === "art" ? "clearArt" : "clearPillow").onclick = () => {
-    versions[id]++;
-    loading[id] = false;
-    if (assets[id]) URL.revokeObjectURL(assets[id].url);
-    assets[id] = null;
-    $(id).value = "";
-    if (id === "art") theme = null;
+    clearImage(id);
     sync();
   };
 }
@@ -293,8 +306,11 @@ $("submit").onclick = async () => {
     return;
   }
   busy = true;
+  $("generate").inert = true;
   scope();
   const form = new FormData();
+  const outputName = $("outputName").value.trim();
+  if (outputName) form.set("output_name", outputName);
   if ($("template").value) form.set("template", $("template").value);
   if (assets.art) form.set("a_image", assets.art.file);
   if (assets.pillow) form.set("pillow_image", assets.pillow.file);
@@ -302,6 +318,9 @@ $("submit").onclick = async () => {
   form.set("background_color", $("bgColor").value);
   try {
     const data = await (await api("jobs", { method: "POST", body: form })).json();
+    for (const id of Object.keys(assets)) clearImage(id);
+    $("outputName").value = "";
+    sync();
     location.hash = "queue";
     notice("已提交 " + data.count + " 个样机任务");
   } catch (err) {
@@ -309,6 +328,7 @@ $("submit").onclick = async () => {
     if (!authenticated) login();
   } finally {
     busy = false;
+    $("generate").inert = false;
     scope();
   }
 };
@@ -353,14 +373,10 @@ async function original(row, download) {
     if (download) {
       const a = node("a");
       a.href = url;
-      a.download =
-        row.template
-          .split("/")
-          .pop()
-          .replace(/\.[^.]+$/, "") +
-        "-" +
-        row.id.slice(0, 8) +
-        ".png";
+      const disposition = response.headers.get("Content-Disposition") || "";
+      const encoded = disposition.match(/filename\*=utf-8''([^;]+)/i);
+      const quoted = disposition.match(/filename="([^"]+)"/i);
+      a.download = encoded ? decodeURIComponent(encoded[1]) : quoted?.[1] || "样机.png";
       a.click();
       setTimeout(() => URL.revokeObjectURL(url), 30000);
     } else {
