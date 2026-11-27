@@ -84,7 +84,7 @@ def save_image(upload, folder, stem):
 def submit(
     b_color: Annotated[str, Form()],
     background_color: Annotated[str, Form()],
-    template: Annotated[str | None, Form()] = None,
+    template: Annotated[str | None, Form(description="留空选择全部；random 随机一款；sequential 顺序一款；也可传模板相对路径")] = None,
     a_image: Annotated[UploadFile | None, File()] = None,
     pillow_image: Annotated[UploadFile | None, File()] = None,
 ):
@@ -92,11 +92,14 @@ def submit(
     if not all(re.fullmatch(r"#[0-9a-fA-F]{6}", color) for color in colors.values()):
         raise HTTPException(422, "颜色应为六位十六进制色值")
     available = templates()
-    if template and template not in available:
-        raise HTTPException(404, "样机已移除，请刷新后重新选择")
-    selected = {template: available[template]} if template else available
-    if not selected:
+    if not available:
         raise HTTPException(422, "templates 目录中没有 PSD 或 PSB 样机")
+    if template == "random":
+        template = secrets.choice(tuple(available))
+    if template and template != "sequential":
+        if template not in available:
+            raise HTTPException(404, "样机已移除，请刷新后重新选择")
+        available = {template: available[template]}
     batch = uuid4().hex
     folder = DATA / "inputs" / batch
     folder.mkdir()
@@ -105,7 +108,8 @@ def submit(
         for name, upload, stem in (("A面", a_image, "a"), ("枕套", pillow_image, "pillow")):
             if upload is not None:
                 images[name] = save_image(upload, folder, stem)
-        ids = store.submit(batch, selected, {"images": images, "colors": colors})
+        ids = store.submit(batch, available, {"images": images, "colors": colors},
+                           sequential=template == "sequential")
     except Exception:
         for path in folder.iterdir():
             path.unlink()

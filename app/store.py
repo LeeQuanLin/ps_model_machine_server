@@ -38,6 +38,9 @@ def initialize():
             );
             CREATE INDEX IF NOT EXISTS job_dispatch ON jobs(status, next_dispatch);
             CREATE INDEX IF NOT EXISTS job_created ON jobs(created_at);
+            CREATE TABLE IF NOT EXISTS template_rotation (
+                id INTEGER PRIMARY KEY CHECK (id = 1), last_template TEXT NOT NULL
+            );
             CREATE TABLE IF NOT EXISTS events (
                 id INTEGER PRIMARY KEY AUTOINCREMENT, job_id TEXT NOT NULL,
                 at TEXT NOT NULL, level TEXT NOT NULL, message TEXT NOT NULL
@@ -50,10 +53,19 @@ def event(db, job_id, message, level="info"):
                (job_id, now(), level, message))
 
 
-def submit(batch, selected, settings):
+def submit(batch, selected, settings, *, sequential=False):
     ids = []
     stamp = now()
     with database() as db:
+        if sequential:
+            # Advance only when this submission commits, including across API workers.
+            db.execute("BEGIN IMMEDIATE")
+            row = db.execute("SELECT last_template FROM template_rotation WHERE id=1").fetchone()
+            names = list(selected)
+            index = names.index(row["last_template"]) + 1 if row and row["last_template"] in selected else 0
+            name = names[index % len(names)]
+            selected = {name: selected[name]}
+            db.execute("INSERT OR REPLACE INTO template_rotation(id,last_template) VALUES (1,?)", (name,))
         for name, path in selected.items():
             job_id = uuid4().hex
             db.execute("""INSERT INTO jobs(id,batch,template,revision,settings,status,created_at,updated_at)

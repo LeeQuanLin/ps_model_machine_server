@@ -120,19 +120,15 @@ $("loginForm").onsubmit = async (event) => {
   }
 };
 function scope() {
-  $("scope").textContent = $("template").value
-    ? "本次生成 1 个样机"
-    : authenticated
-      ? "本次生成 " + templateCount + " 个样机"
-      : "连接后可选择样机";
+  const count = $("template").value ? Math.min(templateCount, 1) : templateCount;
+  $("scope").textContent = authenticated ? "本次生成 " + count + " 个样机" : "连接后可选择样机";
   $("submit").disabled = busy || loading.art || loading.pillow || (authenticated && !templateCount);
 }
 async function loadTemplates() {
-  const data = await (await api("templates")).json(),
-    current = $("template").value;
+  const data = await (await api("templates")).json();
+  const current = $("template").value;
   templateCount = data.items.length;
-  $("template").replaceChildren(new Option("全部样机", ""));
-  for (const name of data.items) $("template").add(new Option(name, name));
+  $("templateFiles").replaceChildren(...data.items.map((name) => new Option(name, name)));
   if (data.items.includes(current)) $("template").value = current;
   account(true);
   scope();
