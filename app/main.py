@@ -4,6 +4,7 @@ import os
 import re
 import secrets
 import shutil
+import sqlite3
 import unicodedata
 from collections.abc import Iterable
 from contextlib import asynccontextmanager
@@ -11,7 +12,7 @@ from html import escape
 from pathlib import Path, PureWindowsPath
 from tempfile import NamedTemporaryFile
 from threading import Event, Thread
-from typing import Annotated
+from typing import Annotated, Literal
 from uuid import UUID, uuid4
 
 from fastapi import FastAPI, File, Form, HTTPException, Query, Request, UploadFile
@@ -23,6 +24,7 @@ from starlette.background import BackgroundTask
 
 from app import exports, products, store
 from app.config import DATA, QUEUE, ROOT, TOKEN, b_side_presets, detail_template, templates
+from app.storage_cleanup import CleanupBusy, CleanupGate, RESET_PATH, clear_workspace
 from app.worker import dispatch, release_inputs
 
 STATIC = ROOT / "app" / "static"
@@ -36,6 +38,10 @@ class ProductForm(BaseModel):
 
 class ProductSelection(BaseModel):
     ids: list[UUID] = Field(min_length=1)
+
+
+class StorageClearConfirmation(BaseModel):
+    confirm: Literal["clear-all"]
 
 
 def directory_size(root):
@@ -130,6 +136,7 @@ async def lifespan(app):
 
 
 app = FastAPI(title="样机工作台", version="2.0.0", lifespan=lifespan)
+app.add_middleware(CleanupGate)
 
 
 @app.middleware("http")
@@ -175,6 +182,20 @@ def storage():
         "free": usage.free,
         "project_used": directory_size(DATA),
     }
+
+
+@app.post(RESET_PATH)
+def clear_storage(confirmation: StorageClearConfirmation):
+    before = directory_size(DATA)
+    try:
+        remaining = clear_workspace(DATA)
+    except CleanupBusy as exc:
+        raise HTTPException(409, str(exc)) from exc
+    except (OSError, sqlite3.Error) as exc:
+        logging.getLogger(__name__).exception("无法释放工作台空间")
+        raise HTTPException(503, "无法释放空间，请检查磁盘权限后重试") from exc
+    usage = storage()
+    return {**usage, "released_bytes": max(0, before - usage["project_used"]), "remaining": remaining}
 
 
 def save_image(upload, folder, stem):

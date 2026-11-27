@@ -4,8 +4,8 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width,initial-scale=1" />
     <title>样机工作台</title>
-    <link rel="stylesheet" href="/static/studio.css?v=5" />
-    <script src="/static/studio.js?v=5" defer></script>
+    <link rel="stylesheet" href="/static/studio.css?v=6" />
+    <script src="/static/studio.js?v=6" defer></script>
   </head>
   <body>
     <aside class="rail">
@@ -22,6 +22,7 @@
           <p><span>磁盘空间 <small id="diskDrive"></small></span><b id="diskTotal">—</b></p>
           <div class="storage-bar" id="storageBar" role="progressbar" aria-label="可用空间" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0"><i id="diskFreeBar"></i></div>
           <p class="storage-foot"><span>可用 <b id="diskFree">—</b></span><span title="项目数据目录（data/studio）占用">已占用 <b id="projectUsed">—</b></span></p>
+          <button class="storage-action" type="button" id="clearStorage">释放空间</button>
         </section>
         <button class="access" id="access"><i></i><span id="accessLabel">连接工作台</span></button>
       </div>
@@ -55,6 +56,24 @@
       </section>
       <p id="notice" role="status" aria-live="polite" hidden></p>
     </main>
+    <dialog id="clearStorageDialog" aria-labelledby="clearStorageTitle" aria-describedby="clearStorageImpact">
+      <form id="clearStorageForm">
+        <div class="dialog-head"><h2 id="clearStorageTitle">释放工作台空间</h2></div>
+        <div class="clear-impact" id="clearStorageImpact">
+          <p>确认后将永久清理当前工作台的数据。</p>
+          <ul>
+            <li>上传缓存、生成图片和导出的 ZIP 文件</li>
+            <li>数据库中的产品、任务、导出记录和工作台日志</li>
+          </ul>
+          <p>排队任务会被取消。正在出图或打包时，请等当前任务结束后再清理。</p>
+        </div>
+        <p class="form-error" id="clearStorageError" role="alert"></p>
+        <div class="dialog-foot rename-foot">
+          <button class="secondary" type="button" id="cancelClearStorage" autofocus>取消</button>
+          <button class="primary danger-button" id="confirmClearStorage">确认清理</button>
+        </div>
+      </form>
+    </dialog>
     <dialog id="productDialog" aria-labelledby="productTitle">
       <form id="productForm">
         <div class="dialog-head">

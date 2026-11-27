@@ -14,6 +14,7 @@ class RequireJobTest(unittest.TestCase):
 
         with mock.patch.object(worker.store, "get", return_value=None), \
                 mock.patch.object(worker.store, "database", lambda: contextlib.nullcontext(None)), \
+                mock.patch.object(worker.store, "delivery_was_cleared", return_value=False), \
                 mock.patch.object(worker.store, "event", side_effect=record_event):
             with self.assertRaises(LookupError):
                 worker.require_job("0123456789abcdef0123456789abcdef", "mockup@test-host")

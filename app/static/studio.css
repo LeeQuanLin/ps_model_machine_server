@@ -166,6 +166,19 @@ nav a[aria-current="page"] {
 .storage-foot b {
   font-size: 11px;
 }
+.storage-action {
+  padding: 7px 0 0;
+  margin-top: 3px;
+  border: 0;
+  border-top: 1px solid #35504b;
+  background: transparent;
+  color: #cde2d8;
+  text-align: right;
+  font-size: 12px;
+}
+.storage-action:hover {
+  color: white;
+}
 svg {
   display: block;
   width: 18px;
@@ -764,6 +777,23 @@ dialog::backdrop {
 #renameDialog {
   width: 400px;
 }
+#clearStorageDialog {
+  width: 465px;
+}
+.clear-impact {
+  color: var(--muted);
+  line-height: 1.55;
+  font-size: 14px;
+}
+.clear-impact ul {
+  padding-left: 22px;
+}
+.danger-button {
+  background: #a33b32;
+}
+.danger-button:hover {
+  background: #862e28;
+}
 .rename-foot {
   justify-content: flex-end;
 }
@@ -929,10 +959,11 @@ dialog::backdrop {
     height: 28px;
   }
   .rail-footer {
-    margin-top: 0;
+    display: contents;
   }
   .storage {
-    display: none;
+    grid-column: 1/-1;
+    order: 4;
   }
   .rail nav {
     order: 3;

@@ -67,6 +67,9 @@ def initialize(*, migrate_queue=True):
                 PRIMARY KEY (export_id, product_id)
             );
             CREATE INDEX IF NOT EXISTS export_product ON export_products(product_id);
+            CREATE TABLE IF NOT EXISTS storage_reset (
+                id INTEGER PRIMARY KEY CHECK (id = 1), cleared_at TEXT NOT NULL
+            );
         """)
         db.execute("BEGIN IMMEDIATE")
         columns = {row["name"] for row in db.execute("PRAGMA table_info(jobs)")}
@@ -99,6 +102,27 @@ def initialize(*, migrate_queue=True):
 def event(db, job_id, message, level="info"):
     db.execute("INSERT INTO events(job_id, at, level, message) VALUES (?,?,?,?)",
                (job_id, now(), level, message))
+
+
+def clear_records():
+    with database() as db:
+        db.execute("BEGIN IMMEDIATE")
+        for table in ("export_products", "exports", "events", "jobs", "products", "template_rotation"):
+            db.execute(f"DELETE FROM {table}")
+        db.execute("DELETE FROM sqlite_sequence WHERE name='events'")
+        db.execute("INSERT OR REPLACE INTO storage_reset VALUES (1,?)", (now(),))
+
+
+def compact_database():
+    with database() as db:
+        db.execute("VACUUM")
+        busy, *_ = db.execute("PRAGMA wal_checkpoint(TRUNCATE)").fetchone()
+        return not busy
+
+
+def delivery_was_cleared(db, created_at):
+    row = db.execute("SELECT cleared_at FROM storage_reset WHERE id=1").fetchone()
+    return bool(row and (created_at is None or created_at <= row["cleared_at"]))
 
 
 def download_name(job):

@@ -200,11 +200,13 @@ def release_inputs(batch):
                 pass
 
 
-def require_job(job_id, hostname):
+def require_job(job_id, hostname, *, created_at=None):
     job = store.get(job_id)
     if not job:
         message = f"Worker {hostname} 在本机数据库找不到任务，请核对投递队列"
         with store.database() as db:
+            if store.delivery_was_cleared(db, created_at):
+                return None
             store.event(db, job_id, message, "error")
         raise LookupError(message)
     return job
@@ -218,26 +220,23 @@ def finish_job(job, status, message, level):
 
 
 @celery.task(name="mockup.render", bind=True, max_retries=None)
-def generate(self, job_id):
+def generate(self, job_id, created_at=None):
     if UUID(job_id).hex != job_id:
         raise ValueError("无效的任务 ID")
-    job = require_job(job_id, self.request.hostname)
-    if job["status"] == "cancelled":
-        return
-    with store.database() as db:
-        store.event(db, job_id, f"Worker {self.request.hostname} 已接单")
     # Jobs share one Photoshop instance, including the interval between quit and relaunch.
     with job_lock(DATA / "photoshop.lock") as acquired:
         if not acquired:
-            with store.database() as db:
-                store.event(db, job_id, "Photoshop 正由其他任务使用，30 秒后重试", "warning")
             raise self.retry(countdown=30)
+        job = require_job(job_id, self.request.hostname, created_at=created_at)
+        if job is None or job["status"] == "cancelled":
+            return
         # Claim the job and check for deletion in the same transaction.
         with store.database() as db:
             db.execute("BEGIN IMMEDIATE")
             current = db.execute("SELECT status FROM jobs WHERE id=?", (job_id,)).fetchone()["status"]
             can_run = current not in store.TERMINAL and current != "blocked"
             if can_run:
+                store.event(db, job_id, f"Worker {self.request.hostname} 已接单")
                 store.transition(db, job_id, "running", "正在准备模板工作副本与素材")
         if not can_run:
             release_inputs(job["batch"])
@@ -275,8 +274,11 @@ def dispatch(stop):
             if not job_id:
                 stop.wait(1)
                 continue
+            job = store.get(job_id)
+            if job is None:
+                continue
             try:
-                generate.apply_async(args=[job_id], task_id=job_id, retry=False)
+                generate.apply_async(args=[job_id, job["created_at"]], task_id=job_id, retry=False)
             except Exception as exc:
                 store.dispatch_error(job_id, exc)
                 stop.wait(3)

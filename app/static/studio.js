@@ -121,18 +121,21 @@ function formatSize(bytes) {
   }
   return value.toFixed(index >= 3 ? 1 : 0) + " " + units[index];
 }
+const clearDialog = $("clearStorageDialog");
+function showStorage(data) {
+  const percent = data.total > 0 ? Math.max(0, Math.min(100, (data.free / data.total) * 100)) : 0;
+  $("diskDrive").textContent = data.drive || "";
+  $("diskTotal").textContent = formatSize(data.total);
+  $("diskFree").textContent = formatSize(data.free);
+  $("projectUsed").textContent = formatSize(data.project_used);
+  $("diskFreeBar").style.width = percent.toFixed(1) + "%";
+  $("storageBar").setAttribute("aria-valuenow", String(Math.round(percent)));
+  $("storage").title = "数据目录所在磁盘：" + (data.drive || "未知") + "；已占用为项目数据目录大小";
+}
 async function loadStorage() {
-  if (!authenticated) return;
+  if (!authenticated || clearDialog.open) return;
   try {
-    const data = await (await api("storage")).json();
-    const percent = data.total > 0 ? Math.max(0, Math.min(100, (data.free / data.total) * 100)) : 0;
-    $("diskDrive").textContent = data.drive || "";
-    $("diskTotal").textContent = formatSize(data.total);
-    $("diskFree").textContent = formatSize(data.free);
-    $("projectUsed").textContent = formatSize(data.project_used);
-    $("diskFreeBar").style.width = percent.toFixed(1) + "%";
-    $("storageBar").setAttribute("aria-valuenow", String(Math.round(percent)));
-    $("storage").title = "数据目录所在磁盘：" + (data.drive || "未知") + "；已占用为项目数据目录大小";
+    showStorage(await (await api("storage")).json());
   } catch {
     $("diskTotal").textContent = "—";
     $("diskFree").textContent = "—";
@@ -160,6 +163,46 @@ function login() {
   if (!$("login").open) $("login").showModal();
   $("token").focus();
 }
+$("clearStorage").onclick = () => {
+  if (!authenticated) return login();
+  $("clearStorageError").textContent = "";
+  clearDialog.showModal();
+};
+$("cancelClearStorage").onclick = () => clearDialog.close();
+clearDialog.addEventListener("cancel", (event) => {
+  if ($("confirmClearStorage").disabled) event.preventDefault();
+});
+$("clearStorageForm").onsubmit = async (event) => {
+  event.preventDefault();
+  const confirm = $("confirmClearStorage");
+  const cancel = $("cancelClearStorage");
+  const error = $("clearStorageError");
+  if (confirm.disabled) return;
+  confirm.disabled = cancel.disabled = true;
+  confirm.textContent = "正在清理…";
+  error.textContent = "";
+  try {
+    const options = jsonOptions("POST", { confirm: "clear-all" });
+    const result = await (await api("storage/clear", options)).json();
+    selected.clear();
+    offset = 0;
+    lastRecords = "";
+    showStorage(result);
+    syncSelection();
+    refresh();
+    if (result.remaining.length) {
+      error.textContent = "数据库记录已清空，以下内容未清理完成：" + result.remaining.join("、") + "。可以重试。";
+    } else {
+      clearDialog.close();
+      notice("工作台已清理，释放 " + formatSize(result.released_bytes));
+    }
+  } catch (err) {
+    error.textContent = err.message;
+  } finally {
+    confirm.disabled = cancel.disabled = false;
+    confirm.textContent = "确认清理";
+  }
+};
 $("access").onclick = login;
 for (const close of document.querySelectorAll(".close"))
   close.onclick = () => close.closest("dialog").close();
@@ -982,7 +1025,7 @@ if (token)
     .then(() => refresh())
     .catch((err) => notice(err.message));
 setInterval(() => {
-  if (authenticated && !document.hidden) {
+  if (authenticated && !document.hidden && !clearDialog.open) {
     if (view !== "outputs") refresh();
     refreshDraft();
   }
