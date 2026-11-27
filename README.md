@@ -14,6 +14,8 @@ FastAPI、Celery worker 和 Photoshop 运行在同一台 Windows 电脑上。Red
 
 脚本验证 Redis 连接和 Photoshop COM，复用已启动的本项目 API 和当前桌面下的项目 worker，并在后台启动缺少的进程。新启动的 API 监听 `0.0.0.0:8765`。本机访问 `http://127.0.0.1:8765/`，局域网设备访问 `http://<Windows电脑的局域网IP>:8765/`。启动日志保存在 `data/studio/logs/`。worker 出图期间请保持 Windows 用户处于登录状态。
 
+如果旧版 API 只监听 `127.0.0.1`，重新运行新版脚本会核对占用端口的项目进程，重启该 API，并检查实际监听地址。看到 `API listening on 0.0.0.0:8765` 后，同一局域网内的电脑可使用输出的对应 `LAN URL` 访问。
+
 ### 首次安装与手动启动
 
 需要 Windows、Python 3.12 或更新版本、已注册 COM 的 Photoshop，以及 API 和 worker 均可访问的 Redis。下面的命令从项目根目录运行。

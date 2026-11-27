@@ -68,6 +68,32 @@ finally:
             -RedirectStandardError (Join-Path $logDir "$role-$stamp.err.log")
     }
 
+    if ($apiState -eq 'reuse-api') {
+        $listeners = @(Get-NetTCPConnection -State Listen -LocalPort $Port)
+        if ($listeners.LocalAddress -notcontains '0.0.0.0') {
+            $local = @($listeners | Where-Object LocalAddress -eq '127.0.0.1')
+            if ($local.Count -ne 1) { throw "Cannot identify the loopback listener for port $Port." }
+            $ownerId = $local[0].OwningProcess
+            $oldApi = Get-Process -Id $ownerId
+            $owner = Get-CimInstance Win32_Process -Filter "ProcessId=$ownerId"
+            $projectExecutables = @($python, (Join-Path (Split-Path -Parent $python) 'uvicorn.exe'))
+            $uvicornCommand = '\buvicorn(?:\.exe)?"?\s+"?app\.main:app\b'
+            $fromProject = $owner.ExecutablePath -in $projectExecutables
+            if (!$fromProject -and $owner.ParentProcessId) {
+                # A Windows venv launcher can delegate to the base Python executable.
+                $parent = Get-CimInstance Win32_Process -Filter "ProcessId=$($owner.ParentProcessId)"
+                $fromProject = $parent.ExecutablePath -in $projectExecutables -and $parent.CommandLine -match $uvicornCommand
+            }
+            if (!$fromProject -or $owner.CommandLine -notmatch $uvicornCommand) {
+                throw "API listens on 127.0.0.1:$Port (PID $ownerId). Stop that API in its original terminal, then rerun this script."
+            }
+            Write-Host "Restarting project API (PID $ownerId) to bind 0.0.0.0:$Port."
+            Stop-Process -InputObject $oldApi -ErrorAction Stop
+            if (!$oldApi.WaitForExit(10000)) { throw "API PID $ownerId did not exit." }
+            $apiState = 'start-api'
+        }
+    }
+
     if ($apiState -eq 'start-api') {
         $api = Start-StudioProcess 'api' @('-m','uvicorn','app.main:app','--host','0.0.0.0','--port',"$Port")
         $ready = $false
@@ -80,7 +106,15 @@ finally:
         }
         if (!$ready) { throw "API startup not confirmed. See $logDir\api-$stamp.err.log" }
     }
-    Write-Host "API available at http://127.0.0.1:$Port/"
+    $bound = @(Get-NetTCPConnection -State Listen -LocalPort $Port)
+    if ($bound.LocalAddress -notcontains '0.0.0.0') {
+        throw "Expected 0.0.0.0:$Port. Actual listening addresses: $($bound.LocalAddress -join ', ')."
+    }
+    Write-Host "API listening on 0.0.0.0:$Port"
+    $lanAddresses = Get-NetIPAddress -AddressFamily IPv4 -AddressState Preferred -ErrorAction SilentlyContinue |
+        Where-Object { $_.IPAddress -notmatch '^(127\.|169\.254\.)' } |
+        Select-Object -ExpandProperty IPAddress -Unique
+    foreach ($address in $lanAddresses) { Write-Host "LAN URL: http://${address}:$Port/" }
 
     $sessionId = [Diagnostics.Process]::GetCurrentProcess().SessionId
     $binDir = Split-Path -Parent $python
