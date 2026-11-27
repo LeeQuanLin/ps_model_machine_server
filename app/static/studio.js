@@ -557,7 +557,7 @@ function makeProducts(items) {
   const checkHead = node("th", undefined, "check-cell");
   checkHead.append(all);
   head.append(checkHead);
-  for (const label of ["产品名", "SKU 进度", "状态", "创建时间", "操作"])
+  for (const label of ["产品名", "SKU 进度", "状态", "创建时间", "下载时间", "操作"])
     head.append(node("th", label));
   const body = table.createTBody();
   for (const row of items) {
@@ -572,6 +572,26 @@ function makeProducts(items) {
       syncSelection();
     };
     if (!row.downloadable) selected.delete(row.id);
+    const identity = node("div", undefined, "product-identity");
+    const cover = node("div", undefined, "product-cover");
+    const fallback = node("span", "暂无缩略图", "fine");
+    cover.append(fallback);
+    if (row.thumbnail_job_id) {
+      const image = node("img");
+      image.alt = row.name + "的首张 SKU 样机图";
+      image.hidden = true;
+      image.onload = () => {
+        fallback.hidden = true;
+        image.hidden = false;
+      };
+      cover.append(image);
+      loadThumbnail(image, row.thumbnail_job_id).catch(() => {});
+    }
+    identity.append(cover, node("b", row.name));
+    const downloaded = row.downloaded_at
+      ? node("time", date(row.downloaded_at))
+      : node("span", "未下载", "fine");
+    if (row.downloaded_at) downloaded.dateTime = row.downloaded_at;
     const status = node("div");
     status.append(state(row.status));
     if (row.message) status.append(node("small", row.message, "row-detail"));
@@ -582,14 +602,15 @@ function makeProducts(items) {
       action.disabled = true;
       try {
         await downloadFile(await api("products/" + row.id + "/download"), row.name + ".zip");
+        if (view === "products") refresh();
       } catch (err) {
         notice(err.message);
       } finally {
         action.disabled = false;
       }
     };
-    for (const value of [checkbox, node("b", row.name), `${row.sku_done} / ${row.sku_count}`,
-      status, date(row.created_at), action]) tr.insertCell().append(value);
+    for (const value of [checkbox, identity, `${row.sku_done} / ${row.sku_count}`,
+      status, date(row.created_at), downloaded, action]) tr.insertCell().append(value);
     tr.cells[0].className = "check-cell";
   }
   wrap.append(table);
@@ -601,6 +622,7 @@ $("downloadSelected").onclick = async () => {
   syncSelection();
   try {
     await downloadFile(await api("products/download", jsonOptions("POST", { ids: [...selected] })), "产品输出图.zip");
+    if (view === "products") refresh();
   } catch (err) {
     notice(err.message);
   } finally {
@@ -688,7 +710,15 @@ $("viewer").onclose = () => {
 function outputName(row) {
   return row.download_name || row.template;
 }
-function gallery(items, seq) {
+async function loadThumbnail(img, jobId) {
+  const response = await api("outputs/" + jobId + "/thumbnail");
+  const blob = await response.blob();
+  if (!img.isConnected) return;
+  const url = URL.createObjectURL(blob);
+  img.src = url;
+  thumbUrls.push(url);
+}
+function gallery(items) {
   const grid = node("div", undefined, "outputs");
   for (const row of items) {
     const name = outputName(row),
@@ -716,17 +746,9 @@ function gallery(items, seq) {
     const context = [row.product_name, kinds[row.kind], row.template, date(row.updated_at)].filter(Boolean);
     card.append(preview, node("b", name), node("small", context.join(" · ")), actions);
     grid.append(card);
-    api("outputs/" + row.id + "/thumbnail")
-      .then((r) => r.blob())
-      .then((blob) => {
-        if (seq !== sequence) return;
-        const url = URL.createObjectURL(blob);
-        img.src = url;
-        thumbUrls.push(url);
-      })
-      .catch(() => {
-        img.alt = "缩略图加载失败";
-      });
+    loadThumbnail(img, row.id).catch(() => {
+      img.alt = "缩略图加载失败";
+    });
   }
   return grid;
 }
@@ -751,6 +773,7 @@ async function refresh() {
   const seq = ++sequence;
   if (!authenticated) {
     lastRecords = "";
+    releaseThumbs();
     $("recordsBody").replaceChildren(node("p", "连接工作台后查看记录", "empty-list"));
     $("pager").hidden = true;
     $("recordCount").textContent = "";
@@ -769,7 +792,7 @@ async function refresh() {
     $("recordCount").textContent = data.total + " 条";
     const result = data.items.length
       ? view === "outputs"
-        ? gallery(data.items, seq)
+        ? gallery(data.items)
         : view === "products" ? makeProducts(data.items) : makeTable(data.items, view === "logs")
       : node("p", { products: "点击「新增产品」开始添加 SKU", outputs: "任务完成后，输出图将显示在这里" }[view]
         || "暂无记录", "empty-list");
@@ -783,6 +806,7 @@ async function refresh() {
   } catch (err) {
     if (seq === sequence) {
       lastRecords = "";
+      releaseThumbs();
       $("recordsBody").replaceChildren(node("p", err.message, "empty-list"));
       $("pager").hidden = true;
     }

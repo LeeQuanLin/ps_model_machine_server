@@ -110,6 +110,10 @@ def advance(db, product_id):
 
 def summarize(product, jobs):
     skus = [job for job in jobs if job["kind"] == "mockup"]
+    first_sku = skus[0] if skus else None
+    thumbnail_job_id = None
+    if first_sku and first_sku["status"] == "done" and first_sku["deleted_at"] is None:
+        thumbnail_job_id = first_sku["id"]
     subject = next((job for job in jobs if job["kind"] == "subject"), None)
     detail = next((job for job in jobs if job["kind"] == "detail"), None)
     completed = sum(job["status"] == "done" for job in skus)
@@ -129,10 +133,19 @@ def summarize(product, jobs):
     else:
         status = "detail"
     return {**dict(product), "status": status, "sku_count": len(skus), "sku_done": completed,
-            "downloadable": download, "message": failed["detail"] if failed else "",
+            "downloadable": download, "thumbnail_job_id": thumbnail_job_id,
+            "message": failed["detail"] if failed else "",
             "skus": [{"id": job["id"], "name": json.loads(job["settings"])["sku_name"],
                       "template": job["template"], "status": job["status"], "message": job["detail"]}
                      for job in skus]}
+
+
+def record_download(product_ids):
+    with store.database() as db:
+        db.execute("BEGIN IMMEDIATE")
+        stamp = store.now()
+        db.executemany("UPDATE products SET downloaded_at=? WHERE id=?",
+                       ((stamp, product_id) for product_id in product_ids))
 
 
 def get(product_id):

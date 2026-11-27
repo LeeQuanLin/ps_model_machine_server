@@ -27,10 +27,17 @@ def queue_name(hostname, data_dir):
 
 
 QUEUE = queue_name(socket.gethostname(), DATA)
-_restart_tasks = os.environ.get("PHOTOSHOP_RESTART_AFTER_TASKS", "10").strip()
-if not _restart_tasks.isdecimal() or int(_restart_tasks) < 1:
-    raise ValueError("PHOTOSHOP_RESTART_AFTER_TASKS 必须是大于 0 的整数")
-PHOTOSHOP_RESTART_AFTER_TASKS = int(_restart_tasks)
+
+
+def positive_int_setting(name, default):
+    value = os.environ.get(name, str(default)).strip()
+    if not value.isdecimal() or int(value) < 1:
+        raise ValueError(f"{name} 必须是大于 0 的整数")
+    return int(value)
+
+
+PHOTOSHOP_RESTART_AFTER_TASKS = positive_int_setting("PHOTOSHOP_RESTART_AFTER_TASKS", 10)
+DETAIL_PAGE_SLICE_HEIGHT = positive_int_setting("DETAIL_PAGE_SLICE_HEIGHT", 960)
 DEFAULT_B_SIDE_PRESETS = "雾蓝:#A4B6C9,米白:#E9E2D4,豆绿:#A3B59C,藕粉:#D7B0AC,灰紫:#B9AFC5,炭灰:#535B60"
 
 

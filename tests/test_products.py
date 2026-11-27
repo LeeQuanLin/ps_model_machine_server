@@ -50,10 +50,10 @@ class ProductWorkflowTest(unittest.TestCase):
             Image.new("RGBA", (800, 800)).save(worker.transparent_path(output))
         return []
 
-    def render_detail(self, template, output, images, **kwargs):
+    def render_detail(self, template, output, images, *, slice_height, **kwargs):
         self.detail_inputs = [image.parent.name for image in images]
         output.mkdir()
-        for index, height in enumerate((960, 100), 1):
+        for index, height in enumerate((slice_height, 100), 1):
             Image.new("RGB", (80, height)).save(output / f"{index:03d}.png")
         return len(images), 6, 2
 
@@ -80,7 +80,9 @@ class ProductWorkflowTest(unittest.TestCase):
                 self.assertIsNone(archive.testzip())
                 return archive.namelist()
         finally:
-            response.path.unlink()
+            task = response.background
+            task.func(*task.args, **task.kwargs)
+            self.assertFalse(response.path.exists())
 
     def test_draft_runs_skus_and_save_triggers_one_subject_then_ordered_detail(self):
         first = self.add_sku("SKU-B", template="sequential")
@@ -90,7 +92,12 @@ class ProductWorkflowTest(unittest.TestCase):
             self.add_sku("sku-a")
         self.assertEqual(duplicate.exception.status_code, 409)
         self.assertEqual(store.next_delivery(), first)
+        self.assertIsNone(main.get_product(self.product_id)["thumbnail_job_id"])
         self.run_job(first)
+        item = main.list_products(offset=0, limit=24)["items"][0]
+        self.assertEqual(item["thumbnail_job_id"], first)
+        self.assertEqual(main.output_image(UUID(first), "thumbnail").path.name, "thumb.png")
+        self.assertIsNone(item["downloaded_at"])
         first_input = self.data / "inputs" / store.get(first)["batch"]
         second_input = self.data / "inputs" / store.get(second)["batch"]
         self.assertTrue(first_input.is_dir())
@@ -114,17 +121,25 @@ class ProductWorkflowTest(unittest.TestCase):
         self.run_job(subject["id"])
         self.assertFalse(second_input.exists())
         self.assertEqual(store.get(detail["id"])["status"], "pending")
-        self.run_job(detail["id"])
+        with patch.object(worker, "DETAIL_PAGE_SLICE_HEIGHT", 1200):
+            self.run_job(detail["id"])
         self.assertEqual(self.render_modes, [(True, False), (True, False), (False, True)])
         self.assertEqual(self.detail_inputs, [first, second])
         self.assertTrue(main.get_product(self.product_id)["downloadable"])
+        with Image.open(main.output_image(UUID(detail["id"]), "image").path) as first_slice:
+            self.assertEqual(first_slice.height, 1200)
         self.assertEqual(main.output_image(UUID(detail["id"]), "image", "002.png").path.name, "002.png")
 
         contents = [
             "新品/样机图/SKU-B.png", "新品/样机图/SKU-A.png", "新品/透明图/SKU-A-透明图.png",
             "新品/详情页/001.png", "新品/详情页/002.png",
         ]
-        self.assertEqual(self.archive(main.download_product(self.product_id)), contents)
+        response = main.download_product(self.product_id)
+        self.assertIsNone(main.get_product(self.product_id)["downloaded_at"])
+        single_stamp = "2026-11-27T08:00:00.000+00:00"
+        with patch.object(store, "now", return_value=single_stamp):
+            self.assertEqual(self.archive(response), contents)
+        self.assertEqual(main.get_product(self.product_id)["downloaded_at"], single_stamp)
         second_product = uuid4()
         main.create_product(second_product, self.form)
         original_product = self.product_id
@@ -135,14 +150,20 @@ class ProductWorkflowTest(unittest.TestCase):
         self.run_job(subject["id"])
         self.run_job(detail["id"])
         selection = main.ProductSelection(ids=[original_product, second_product, original_product])
-        self.assertEqual(self.archive(main.download_products(selection)), contents + [
-            "新品 (2)/样机图/SKU-C.png", "新品 (2)/透明图/SKU-C-透明图.png",
-            "新品 (2)/详情页/001.png", "新品 (2)/详情页/002.png",
-        ])
+        batch_stamp = "2026-11-27T09:00:00.000+00:00"
+        with patch.object(store, "now", return_value=batch_stamp):
+            self.assertEqual(self.archive(main.download_products(selection)), contents + [
+                "新品 (2)/样机图/SKU-C.png", "新品 (2)/透明图/SKU-C-透明图.png",
+                "新品 (2)/详情页/001.png", "新品 (2)/详情页/002.png",
+            ])
+        self.assertEqual({item["downloaded_at"] for item in main.list_products(0, 24)["items"]}, {batch_stamp})
         main.delete_output(UUID(first))
-        self.assertEqual(main.get_product(original_product)["status"], "removed")
+        product = main.get_product(original_product)
+        self.assertEqual(product["status"], "removed")
+        self.assertIsNone(product["thumbnail_job_id"])
         with self.assertRaises(HTTPException):
             main.download_product(original_product)
+        self.assertEqual(main.get_product(original_product)["downloaded_at"], batch_stamp)
 
     def test_failed_sku_cannot_release_detail_job(self):
         first = self.add_sku("失败款")
@@ -161,6 +182,7 @@ class ProductWorkflowTest(unittest.TestCase):
         self.assertEqual(summary["status"], "failed")
         self.assertIn("模板异常", summary["message"])
         self.assertFalse(summary["downloadable"])
+        self.assertIsNone(summary["thumbnail_job_id"])
 
 
 if __name__ == "__main__":

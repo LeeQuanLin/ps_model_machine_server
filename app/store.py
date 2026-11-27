@@ -52,7 +52,8 @@ def initialize(*, migrate_queue=True):
                 at TEXT NOT NULL, level TEXT NOT NULL, message TEXT NOT NULL
             );
             CREATE TABLE IF NOT EXISTS products (
-                id TEXT PRIMARY KEY, name TEXT NOT NULL, created_at TEXT NOT NULL, saved_at TEXT
+                id TEXT PRIMARY KEY, name TEXT NOT NULL, created_at TEXT NOT NULL, saved_at TEXT,
+                downloaded_at TEXT
             );
         """)
         db.execute("BEGIN IMMEDIATE")
@@ -63,6 +64,9 @@ def initialize(*, migrate_queue=True):
             db.execute("ALTER TABLE jobs ADD COLUMN product_id TEXT")
         if "kind" not in columns:
             db.execute("ALTER TABLE jobs ADD COLUMN kind TEXT NOT NULL DEFAULT 'mockup'")
+        product_columns = {row["name"] for row in db.execute("PRAGMA table_info(products)")}
+        if "downloaded_at" not in product_columns:
+            db.execute("ALTER TABLE products ADD COLUMN downloaded_at TEXT")
         db.execute("CREATE INDEX IF NOT EXISTS job_product ON jobs(product_id)")
         db.execute("CREATE INDEX IF NOT EXISTS job_batch ON jobs(batch)")
         if migrate_queue:

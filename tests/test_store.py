@@ -91,6 +91,22 @@ class StoreTest(unittest.TestCase):
             queued = db.execute("SELECT status FROM jobs WHERE id='queued'").fetchone()
         self.assertEqual(queued["status"], "queued")
 
+    def test_existing_products_have_no_download_time_after_migration(self):
+        self._create_old_database()
+        with store.database() as db:
+            db.executescript("""
+                CREATE TABLE products (
+                    id TEXT PRIMARY KEY, name TEXT NOT NULL, created_at TEXT NOT NULL, saved_at TEXT
+                );
+                INSERT INTO products VALUES ('existing', '已有产品', '2026-11-27', NULL);
+            """)
+        store.initialize()
+        store.initialize()
+        with store.database() as db:
+            existing = db.execute("SELECT * FROM products WHERE id='existing'").fetchone()
+        self.assertEqual(existing["name"], "已有产品")
+        self.assertIsNone(existing["downloaded_at"])
+
     def test_next_delivery_claims_one_job_at_a_time(self):
         self._create_old_database()
         store.initialize()

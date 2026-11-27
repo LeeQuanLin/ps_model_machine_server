@@ -298,7 +298,15 @@ def save_product(product_id: UUID, form: ProductForm):
     return result
 
 
-def zip_response(files: Iterable[tuple[Path, str]], filename: str):
+def finish_zip(path, on_sent):
+    try:
+        if on_sent is not None:
+            on_sent()
+    finally:
+        path.unlink(missing_ok=True)
+
+
+def zip_response(files: Iterable[tuple[Path, str]], filename: str, *, on_sent=None):
     with NamedTemporaryFile(dir=DATA, prefix="download-", suffix=".zip", delete=False) as tmp:
         path = Path(tmp.name)
     try:
@@ -310,10 +318,11 @@ def zip_response(files: Iterable[tuple[Path, str]], filename: str):
         path.unlink(missing_ok=True)
         raise
     return FileResponse(path, media_type="application/zip", filename=filename,
-                        background=BackgroundTask(path.unlink, missing_ok=True))
+                        background=BackgroundTask(finish_zip, path, on_sent))
 
 
 def product_archive(ids, *, batch=False):
+    ids = tuple(ids)
     files = []
     used_names = set()
     with store.database() as db:
@@ -343,7 +352,8 @@ def product_archive(ids, *, batch=False):
                 else:
                     files.append((folder / "render.png", f"{prefix}/样机图/{store.download_name(job)}"))
     try:
-        return zip_response(files, "产品输出图.zip" if batch else f"{name}.zip")
+        return zip_response(files, "产品输出图.zip" if batch else f"{name}.zip",
+                            on_sent=lambda: products.record_download(ids))
     except FileNotFoundError as exc:
         raise HTTPException(409, "部分输出文件已丢失，请刷新产品列表") from exc
 

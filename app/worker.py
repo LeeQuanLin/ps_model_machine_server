@@ -13,7 +13,9 @@ from celery.signals import worker_init, worker_ready, worker_shutdown
 from PIL import Image
 
 from app import products, store
-from app.config import BROKER, DATA, PHOTOSHOP_RESTART_AFTER_TASKS, QUEUE, revision, template_files
+from app.config import (
+    BROKER, DATA, DETAIL_PAGE_SLICE_HEIGHT, PHOTOSHOP_RESTART_AFTER_TASKS, QUEUE, revision, template_files,
+)
 from 详情页生成 import generate as generate_detail_page
 from 贴样机 import render, transparent_path
 
@@ -116,8 +118,10 @@ def run_detail(job, folder, source, settings):
         store.event(db, job["id"], f"正在调用 Photoshop，按添加顺序填入 {len(images)} 张 SKU 样机图")
     with TemporaryDirectory(dir=folder) as tmp:
         work = Path(tmp)
-        used, slots, count = generate_detail_page(source, work / "slices", images,
-                                                  on_processed=lambda: save_count(processed_count() + 1))
+        used, slots, count = generate_detail_page(
+            source, work / "slices", images, slice_height=DETAIL_PAGE_SLICE_HEIGHT,
+            on_processed=lambda: save_count(processed_count() + 1),
+        )
         make_thumbnail(work / "slices" / "001.png", work / "thumb.png")
         (work / "thumb.png").replace(folder / "thumb.png")
         (work / "slices").rename(folder / "slices")
