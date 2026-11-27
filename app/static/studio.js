@@ -1,7 +1,7 @@
 "use strict";
 const $ = (id) => document.getElementById(id);
-const names = { products: "产品列表", queue: "任务队列", logs: "日志", outputs: "输出图管理" };
-const titles = { products: "全部产品", queue: "队列记录", logs: "任务日志", outputs: "已生成图片" };
+const names = { products: "产品列表", exports: "导出记录", queue: "任务队列", logs: "日志", outputs: "输出图管理" };
+const titles = { products: "全部产品", exports: "产品导出", queue: "队列记录", logs: "任务日志", outputs: "已生成图片" };
 const kinds = { mockup: "样机图", subject: "透明图", detail: "详情页" };
 const states = {
   draft: "草稿",
@@ -19,6 +19,7 @@ const states = {
   removed: "输出已删除",
 };
 const icons = {
+  archive: "M3 4h18v5H3z M5 9v11h14V9 M10 13h4",
   layers: "M3 8l9-5 9 5-9 5z M3 12l9 5 9-5 M3 16l9 5 9-5",
   queue: "M8 6h13 M8 12h13 M8 18h13 M3 6h1 M3 12h1 M3 18h1",
   logs: "M5 3h11l3 3v15H5z M8 9h8 M8 13h8 M8 17h5",
@@ -85,6 +86,7 @@ let view = "products",
   lastRecords = "";
 const selected = new Set();
 const deletingProducts = new Set();
+const downloadingExports = new Set();
 const limit = 24,
   assets = { art: null, pillow: null },
   loading = { art: false, pillow: false },
@@ -540,8 +542,8 @@ function syncSelection() {
     header.indeterminate = checked > 0 && checked < visible.length;
     header.disabled = !visible.length;
   }
-  $("downloadSelected").disabled = !selected.size || batchBusy;
-  $("downloadSelected").textContent = selected.size ? `批量下载（${selected.size}）` : "批量下载";
+  $("exportSelected").disabled = !selected.size || batchBusy;
+  $("exportSelected").textContent = selected.size ? `批量导出（${selected.size}）` : "批量导出";
 }
 const renameDialog = $("renameDialog");
 let renameId;
@@ -607,7 +609,7 @@ function makeProducts(items) {
   const all = node("input");
   all.id = "selectPage";
   all.type = "checkbox";
-  all.setAttribute("aria-label", "选择本页可下载产品");
+  all.setAttribute("aria-label", "选择本页可导出产品");
   all.onchange = () => {
     for (const row of items.filter((item) => item.downloadable))
       all.checked ? selected.add(row.id) : selected.delete(row.id);
@@ -654,14 +656,13 @@ function makeProducts(items) {
     const status = node("div");
     status.append(state(row.status));
     if (row.message) status.append(node("small", row.message, "row-detail"));
-    const action = node("button", row.status === "draft" ? "继续配置" : "下载 ZIP", "textbtn row-action");
+    const action = node("button", row.status === "draft" ? "继续配置" : "导出", "textbtn row-action");
     action.disabled = row.status !== "draft" && !row.downloadable;
     action.onclick = async () => {
       if (row.status === "draft") return openProduct(row.id);
       action.disabled = true;
       try {
-        await downloadFile(await api("products/" + row.id + "/download"), row.name + ".zip");
-        if (view === "products") refresh();
+        await requestExport([row.id]);
       } catch (err) {
         notice(err.message);
       } finally {
@@ -684,13 +685,24 @@ function makeProducts(items) {
   wrap.append(table);
   return wrap;
 }
-$("downloadSelected").onclick = async () => {
+async function requestExport(ids) {
+  await api("exports", jsonOptions("POST", { ids }));
+  ids.forEach((id) => selected.delete(id));
+  syncSelection();
+  notice("导出已提交，打包完成后可在导出记录下载");
+  if (view === "exports") {
+    offset = 0;
+    refresh();
+  } else {
+    location.hash = "exports";
+  }
+}
+$("exportSelected").onclick = async () => {
   if (batchBusy || !selected.size) return;
   batchBusy = true;
   syncSelection();
   try {
-    await downloadFile(await api("products/download", jsonOptions("POST", { ids: [...selected] })), "产品输出图.zip");
-    if (view === "products") refresh();
+    await requestExport([...selected]);
   } catch (err) {
     notice(err.message);
   } finally {
@@ -698,6 +710,46 @@ $("downloadSelected").onclick = async () => {
     syncSelection();
   }
 };
+function makeExportTable(items) {
+  const wrap = node("div", undefined, "table-scroll");
+  const table = node("table", undefined, "export-table");
+  const head = table.createTHead().insertRow();
+  for (const label of ["导出文件", "产品数量", "状态", "提交时间", "导出时间", "下载时间", "文件大小", "操作"])
+    head.append(node("th", label));
+  const body = table.createTBody();
+  const labels = { pending: "等待打包", running: "打包中", done: "可下载", failed: "打包失败" };
+  for (const row of items) {
+    const tr = body.insertRow();
+    const status = node("div");
+    status.append(node("span", labels[row.status], "state " + row.status));
+    if (row.error) status.append(node("small", row.error, "row-detail"));
+    const download = node("button", "下载", "textbtn row-action");
+    download.disabled = row.status !== "done" || downloadingExports.has(row.id);
+    download.dataset.exportDownload = row.id;
+    download.onclick = async () => {
+      if (downloadingExports.has(row.id)) return;
+      downloadingExports.add(row.id);
+      download.disabled = true;
+      try {
+        await downloadFile(await api("exports/" + row.id + "/download"), row.filename);
+        if (view === "exports") await refresh();
+      } catch (err) {
+        notice(err.message);
+      } finally {
+        downloadingExports.delete(row.id);
+        for (const button of document.querySelectorAll("[data-export-download]")) {
+          if (button.dataset.exportDownload === row.id) button.disabled = false;
+        }
+      }
+    };
+    for (const value of [node("b", row.filename), String(row.product_count), status, date(row.created_at),
+      row.status === "done" ? date(row.finished_at) : "—",
+      row.downloaded_at ? date(row.downloaded_at) : node("span", "未下载", "fine"),
+      row.size == null ? "—" : formatSize(row.size), download]) tr.insertCell().append(value);
+  }
+  wrap.append(table);
+  return wrap;
+}
 function makeTable(items, log) {
   const wrap = node("div", undefined, "table-scroll"),
     table = node("table"),
@@ -851,7 +903,7 @@ async function refresh() {
     const endpoint = view === "queue" ? "jobs" : view;
     const data = await (await api(endpoint + "?offset=" + offset + "&limit=" + limit)).json();
     if (seq !== sequence) return;
-    if (view === "products") {
+    if (view === "products" || view === "exports") {
       if (offset > 0 && offset >= data.total) {
         offset = Math.max(0, Math.ceil(data.total / limit) - 1) * limit;
         return refresh();
@@ -865,8 +917,10 @@ async function refresh() {
     const result = data.items.length
       ? view === "outputs"
         ? gallery(data.items)
-        : view === "products" ? makeProducts(data.items) : makeTable(data.items, view === "logs")
-      : node("p", { products: "点击「新增产品」开始添加 SKU", outputs: "任务完成后，输出图将显示在这里" }[view]
+        : view === "products" ? makeProducts(data.items)
+          : view === "exports" ? makeExportTable(data.items) : makeTable(data.items, view === "logs")
+      : node("p", { products: "点击「新增产品」开始添加 SKU", exports: "暂无导出记录",
+        outputs: "任务完成后，输出图将显示在这里" }[view]
         || "暂无记录", "empty-list");
     $("recordsBody").replaceChildren(result);
     syncSelection();
@@ -892,7 +946,7 @@ function route() {
   lastRecords = "";
   releaseThumbs();
   $("newProduct").hidden = view !== "products";
-  $("downloadSelected").hidden = view !== "products";
+  $("exportSelected").hidden = view !== "products";
   $("crumb").textContent = names[view];
   $("pageTitle").textContent = names[view];
   $("recordTitle").textContent = titles[view] || "";

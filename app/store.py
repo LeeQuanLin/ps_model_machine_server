@@ -55,6 +55,18 @@ def initialize(*, migrate_queue=True):
                 id TEXT PRIMARY KEY, name TEXT NOT NULL, created_at TEXT NOT NULL, saved_at TEXT,
                 downloaded_at TEXT, deleted_at TEXT, cleanup_pending INTEGER NOT NULL DEFAULT 0
             );
+            CREATE TABLE IF NOT EXISTS exports (
+                id TEXT PRIMARY KEY, filename TEXT NOT NULL, product_count INTEGER NOT NULL,
+                manifest TEXT NOT NULL, status TEXT NOT NULL, created_at TEXT NOT NULL,
+                finished_at TEXT, downloaded_at TEXT, size INTEGER,
+                error TEXT NOT NULL DEFAULT ''
+            );
+            CREATE INDEX IF NOT EXISTS export_status ON exports(status, created_at);
+            CREATE TABLE IF NOT EXISTS export_products (
+                export_id TEXT NOT NULL, product_id TEXT NOT NULL,
+                PRIMARY KEY (export_id, product_id)
+            );
+            CREATE INDEX IF NOT EXISTS export_product ON export_products(product_id);
         """)
         db.execute("BEGIN IMMEDIATE")
         columns = {row["name"] for row in db.execute("PRAGMA table_info(jobs)")}
@@ -207,6 +219,12 @@ def can_delete_output(db, product_id):
         return True
     return bool(db.execute("""SELECT 1 FROM jobs WHERE product_id=? AND kind='detail'
                               AND status IN ('done','failed','skipped')""", (product_id,)).fetchone())
+
+
+def has_active_export(db, product_id):
+    return bool(db.execute("""SELECT 1 FROM export_products ep JOIN exports e ON e.id=ep.export_id
+                              WHERE ep.product_id=? AND e.status IN ('pending','running') LIMIT 1""",
+                           (product_id,)).fetchone())
 
 
 def page(kind, offset, limit):

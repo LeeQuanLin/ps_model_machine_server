@@ -11,7 +11,7 @@ from zipfile import ZipFile
 from fastapi import HTTPException, UploadFile
 from PIL import Image
 
-from app import main, products, store, worker
+from app import exports, main, products, store, worker
 
 
 class ProductWorkflowTest(unittest.TestCase):
@@ -83,7 +83,12 @@ class ProductWorkflowTest(unittest.TestCase):
         finally:
             task = response.background
             task.func(*task.args, **task.kwargs)
-            self.assertFalse(response.path.exists())
+
+    def queue_export(self, *ids):
+        return UUID(main.submit_export(main.ProductSelection(ids=list(ids)))["id"])
+
+    def export_record(self, export_id):
+        return next(row for row in main.list_exports(0, 24)["items"] if row["id"] == export_id.hex)
 
     def test_draft_runs_skus_and_save_triggers_one_subject_then_ordered_detail(self):
         first = self.add_sku("SKU-B", template="sequential")
@@ -135,11 +140,28 @@ class ProductWorkflowTest(unittest.TestCase):
             "新品/样机图/SKU-B.png", "新品/样机图/SKU-A.png", "新品/透明图/SKU-A-透明图.png",
             "新品/详情页/001.png", "新品/详情页/002.png",
         ]
-        response = main.download_product(self.product_id)
+        single = self.queue_export(self.product_id)
+        self.assertEqual(self.export_record(single)["status"], "pending")
+        self.assertFalse(exports.archive_path(self.data, single.hex).exists())
+        with self.assertRaises(HTTPException) as pending:
+            main.download_export(single)
+        self.assertEqual(pending.exception.status_code, 409)
+        for delete, target in ((main.delete_product, self.product_id), (main.delete_output, UUID(first))):
+            with self.assertRaises(HTTPException) as in_use:
+                delete(target)
+            self.assertEqual(in_use.exception.status_code, 409)
+        self.assertTrue(exports.process_next(self.data))
+        response = main.download_export(single)
         self.assertIsNone(main.get_product(self.product_id)["downloaded_at"])
         single_stamp = "2026-11-27T08:00:00.000+00:00"
         with patch.object(store, "now", return_value=single_stamp):
             self.assertEqual(self.archive(response), contents)
+        self.assertTrue(response.path.is_file())
+        single_record = self.export_record(single)
+        self.assertEqual(single_record["product_count"], 1)
+        self.assertEqual(single_record["downloaded_at"], single_stamp)
+        self.assertIsNotNone(single_record["finished_at"])
+        self.assertEqual(single_record["size"], response.path.stat().st_size)
         self.assertEqual(main.get_product(self.product_id)["downloaded_at"], single_stamp)
         second_product = uuid4()
         main.create_product(second_product, self.form)
@@ -150,10 +172,12 @@ class ProductWorkflowTest(unittest.TestCase):
         _, subject, detail = self.jobs()
         self.run_job(subject["id"])
         self.run_job(detail["id"])
-        selection = main.ProductSelection(ids=[original_product, second_product, original_product])
+        batch = self.queue_export(original_product, second_product, original_product)
+        self.assertTrue(exports.process_next(self.data))
+        self.assertEqual(self.export_record(batch)["product_count"], 2)
         batch_stamp = "2026-11-27T09:00:00.000+00:00"
         with patch.object(store, "now", return_value=batch_stamp):
-            self.assertEqual(self.archive(main.download_products(selection)), contents + [
+            self.assertEqual(self.archive(main.download_export(batch)), contents + [
                 "新品 (2)/样机图/SKU-C.png", "新品 (2)/透明图/SKU-C-透明图.png",
                 "新品 (2)/详情页/001.png", "新品 (2)/详情页/002.png",
             ])
@@ -163,7 +187,7 @@ class ProductWorkflowTest(unittest.TestCase):
         self.assertEqual(product["status"], "removed")
         self.assertIsNone(product["thumbnail_job_id"])
         with self.assertRaises(HTTPException):
-            main.download_product(original_product)
+            self.queue_export(original_product)
         self.assertEqual(main.get_product(original_product)["downloaded_at"], batch_stamp)
 
     def test_failed_sku_cannot_release_detail_job(self):
@@ -201,7 +225,9 @@ class ProductWorkflowTest(unittest.TestCase):
         response = main.output_image(UUID(jobs[-1]["id"]), "download")
         self.assertIn("新产品名-详情页.zip", unquote(response.headers["content-disposition"]))
         self.archive(response)
-        response = main.download_product(self.product_id)
+        export_id = self.queue_export(self.product_id)
+        self.assertTrue(exports.process_next(self.data))
+        response = main.download_export(export_id)
         self.assertIn("新产品名.zip", unquote(response.headers["content-disposition"]))
         self.assertIn("新产品名/样机图/原 SKU.png", self.archive(response))
         with self.assertRaises(HTTPException) as invalid:
@@ -231,7 +257,7 @@ class ProductWorkflowTest(unittest.TestCase):
         self.run_job(second)
         self.assertEqual(self.render_modes, [(True, False)])
         self.assertIsNone(store.next_delivery())
-        for action in (main.get_product, main.download_product):
+        for action in (main.get_product, self.queue_export):
             with self.assertRaises(HTTPException) as missing:
                 action(self.product_id)
             self.assertEqual(missing.exception.status_code, 404)
@@ -258,6 +284,42 @@ class ProductWorkflowTest(unittest.TestCase):
         self.assertTrue((self.data / "outputs" / sku).exists())
         self.assertTrue(main.purge_product_files(self.product_id.hex))
         self.assertFalse((self.data / "outputs" / sku).exists())
+
+    def test_export_recovers_interrupted_archive_and_survives_product_deletion(self):
+        self.add_sku("SKU")
+        main.save_product(self.product_id, self.form)
+        for job in self.jobs():
+            self.run_job(job["id"])
+        export_id = self.queue_export(self.product_id)
+        with store.database() as db:
+            db.execute("UPDATE exports SET status='running' WHERE id=?", (export_id.hex,))
+        path = exports.archive_path(self.data, export_id.hex)
+        path.parent.mkdir()
+        path.with_suffix(".part").write_bytes(b"interrupted")
+        store.initialize()
+        self.assertTrue(exports.process_next(self.data))
+        self.assertFalse(path.with_suffix(".part").exists())
+        main.delete_product(self.product_id)
+        self.assertIn("新品/样机图/SKU.png", self.archive(main.download_export(export_id)))
+
+    def test_failed_export_does_not_block_later_exports_or_product_deletion(self):
+        self.add_sku("SKU")
+        main.save_product(self.product_id, self.form)
+        for job in self.jobs():
+            self.run_job(job["id"])
+        failed_id = self.queue_export(self.product_id)
+        next_id = self.queue_export(self.product_id)
+        with (
+            patch.object(exports, "write_archive", side_effect=OSError("disk full")),
+            self.assertLogs(exports.__name__, "ERROR"),
+        ):
+            self.assertTrue(exports.process_next(self.data))
+        self.assertEqual(self.export_record(failed_id)["status"], "failed")
+        with self.assertRaises(HTTPException):
+            main.download_export(failed_id)
+        self.assertTrue(exports.process_next(self.data))
+        self.assertEqual(self.export_record(next_id)["status"], "done")
+        self.assertTrue(main.delete_product(self.product_id)["deleted"])
 
 
 if __name__ == "__main__":

@@ -49,6 +49,8 @@ def delete(product_id):
         jobs = product_jobs(db, product_id)
         if any(job["status"] == "running" for job in jobs):
             raise ProductConflict("产品正在出图，请等当前任务结束后再删除")
+        if store.has_active_export(db, product_id):
+            raise ProductConflict("产品正在等待导出或打包，请等导出完成后再删除")
         stamp = store.now()
         db.execute("UPDATE products SET deleted_at=?,cleanup_pending=1 WHERE id=?", (stamp, product_id))
         for job in jobs:
@@ -172,14 +174,6 @@ def summarize(product, jobs):
             "skus": [{"id": job["id"], "name": json.loads(job["settings"])["sku_name"],
                       "template": job["template"], "status": job["status"], "message": job["detail"]}
                      for job in skus]}
-
-
-def record_download(product_ids):
-    with store.database() as db:
-        db.execute("BEGIN IMMEDIATE")
-        stamp = store.now()
-        db.executemany("UPDATE products SET downloaded_at=? WHERE id=? AND deleted_at IS NULL",
-                       ((stamp, product_id) for product_id in product_ids))
 
 
 def get(product_id):

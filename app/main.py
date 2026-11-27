@@ -13,7 +13,6 @@ from tempfile import NamedTemporaryFile
 from threading import Event, Thread
 from typing import Annotated
 from uuid import UUID, uuid4
-from zipfile import ZipFile
 
 from fastapi import FastAPI, File, Form, HTTPException, Query, Request, UploadFile
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
@@ -22,7 +21,7 @@ from PIL import Image, UnidentifiedImageError
 from pydantic import BaseModel, Field
 from starlette.background import BackgroundTask
 
-from app import products, store
+from app import exports, products, store
 from app.config import DATA, QUEUE, ROOT, TOKEN, b_side_presets, detail_template, templates
 from app.worker import dispatch, release_inputs
 
@@ -116,13 +115,18 @@ async def lifespan(app):
         purge_product_files(product["id"])
     logging.getLogger("uvicorn.error").info("样机工作台队列 %s，数据目录 %s", QUEUE, DATA)
     stop = Event()
-    thread = Thread(target=dispatch, args=(stop,), name="mockup-dispatch", daemon=True)
-    thread.start()
+    threads = [
+        Thread(target=dispatch, args=(stop,), name="mockup-dispatch", daemon=True),
+        Thread(target=exports.dispatch, args=(DATA, stop), name="export-dispatch", daemon=True),
+    ]
+    for thread in threads:
+        thread.start()
     try:
         yield
     finally:
         stop.set()
-        thread.join(timeout=8)
+        for thread in threads:
+            thread.join(timeout=8)
 
 
 app = FastAPI(title="样机工作台", version="2.0.0", lifespan=lifespan)
@@ -356,74 +360,47 @@ def save_product(product_id: UUID, form: ProductForm):
     return result
 
 
-def finish_zip(path, on_sent):
-    try:
-        if on_sent is not None:
-            on_sent()
-    finally:
-        path.unlink(missing_ok=True)
-
-
-def zip_response(files: Iterable[tuple[Path, str]], filename: str, *, on_sent=None):
+def zip_response(files: Iterable[tuple[Path, str]], filename: str):
     with NamedTemporaryFile(dir=DATA, prefix="download-", suffix=".zip", delete=False) as tmp:
         path = Path(tmp.name)
     try:
-        # PNGs are already compressed. Store them directly in the archive.
-        with ZipFile(path, "w") as archive:
-            for source, name in files:
-                archive.write(source, name)
+        exports.write_archive(path, files)
     except BaseException:
         path.unlink(missing_ok=True)
         raise
     return FileResponse(path, media_type="application/zip", filename=filename,
-                        background=BackgroundTask(finish_zip, path, on_sent))
+                        background=BackgroundTask(path.unlink, missing_ok=True))
 
 
-def product_archive(ids, *, batch=False):
-    ids = tuple(ids)
-    files = []
-    used_names = set()
-    with store.database() as db:
-        db.execute("BEGIN")
-        for product_id in ids:
-            product = products.find(db, product_id)
-            if product is None:
-                raise HTTPException(404, "找不到所选产品")
-            jobs = products.product_jobs(db, product_id)
-            if not products.summarize(product, jobs)["downloadable"]:
-                raise HTTPException(409, f"「{product['name']}」的输出未完成或已删除")
-            name = prefix = product["name"]
-            suffix = 2
-            while prefix.casefold() in used_names:
-                prefix = f"{name} ({suffix})"
-                suffix += 1
-            used_names.add(prefix.casefold())
-            for job in jobs:
-                folder = DATA / "outputs" / job["id"]
-                if job["kind"] == "detail":
-                    slices = store.detail_slices(folder)
-                    if not slices:
-                        raise HTTPException(409, f"「{name}」的详情页切片已丢失")
-                    files.extend((path, f"{prefix}/详情页/{path.name}") for path in slices)
-                elif job["kind"] == "subject":
-                    files.append((folder / "subject.png", f"{prefix}/透明图/{store.download_name(job)}"))
-                else:
-                    files.append((folder / "render.png", f"{prefix}/样机图/{store.download_name(job)}"))
+@app.post("/api/exports", status_code=202)
+def submit_export(selection: ProductSelection):
+    ids = tuple(dict.fromkeys(product_id.hex for product_id in selection.ids))
     try:
-        return zip_response(files, "产品输出图.zip" if batch else f"{name}.zip",
-                            on_sent=lambda: products.record_download(ids))
-    except FileNotFoundError as exc:
-        raise HTTPException(409, "部分输出文件已丢失，请刷新产品列表") from exc
+        return exports.submit(DATA, ids)
+    except LookupError as exc:
+        raise HTTPException(404, str(exc)) from exc
+    except products.ProductConflict as exc:
+        raise HTTPException(409, str(exc)) from exc
 
 
-@app.get("/api/products/{product_id}/download")
-def download_product(product_id: UUID):
-    return product_archive([product_id.hex])
+@app.get("/api/exports")
+def list_exports(offset: int = Query(0, ge=0), limit: int = Query(24, ge=1, le=120)):
+    return exports.page(offset, limit)
 
 
-@app.post("/api/products/download")
-def download_products(selection: ProductSelection):
-    return product_archive(dict.fromkeys(product_id.hex for product_id in selection.ids), batch=True)
+@app.get("/api/exports/{export_id}/download")
+def download_export(export_id: UUID):
+    record = exports.get(export_id.hex)
+    if not record:
+        raise HTTPException(404, "找不到导出记录")
+    if record["status"] != "done":
+        raise HTTPException(409, "该导出记录没有可下载文件")
+    path = exports.archive_path(DATA, export_id.hex)
+    if not path.is_file():
+        raise HTTPException(404, "导出文件已丢失，请重新导出")
+    return FileResponse(path, media_type="application/zip", filename=record["filename"],
+                        headers={"Cache-Control": "no-store"},
+                        background=BackgroundTask(exports.record_download, export_id.hex))
 
 
 @app.get("/api/jobs")
@@ -443,16 +420,20 @@ def outputs(offset: int = Query(0, ge=0), limit: int = Query(24, ge=1, le=120)):
 
 @app.delete("/api/outputs/{job_id}")
 def delete_output(job_id: UUID):
-    job = store.get(job_id.hex)
-    if not job or job["status"] != "done" or job.get("deleted_at"):
-        raise HTTPException(404, "找不到输出图")
-    with store.database() as db:
-        if not store.can_delete_output(db, job["product_id"]):
-            raise HTTPException(409, "产品任务仍需要该输出图，请在流程结束后删除")
-    trash = stash_output_folder(job_id.hex)
+    trash = None
     try:
         with store.database() as db:
-            deleted = store.mark_output_deleted(db, job_id.hex)
+            db.execute("BEGIN IMMEDIATE")
+            job = db.execute("""SELECT product_id FROM jobs
+                                WHERE id=? AND status='done' AND deleted_at IS NULL""", (job_id.hex,)).fetchone()
+            if not job:
+                raise HTTPException(404, "找不到输出图")
+            if not store.can_delete_output(db, job["product_id"]):
+                raise HTTPException(409, "产品任务仍需要该输出图，请在流程结束后删除")
+            if job["product_id"] and store.has_active_export(db, job["product_id"]):
+                raise HTTPException(409, "该输出图正在等待导出或打包，请等导出完成后再删除")
+            trash = stash_output_folder(job_id.hex)
+            store.mark_output_deleted(db, job_id.hex)
     except Exception:
         if trash is not None:
             try:
@@ -460,15 +441,8 @@ def delete_output(job_id: UUID):
             except OSError:
                 pass
         raise
-    current = store.get(job_id.hex) if not deleted else None
-    if not deleted and not (current and current.get("deleted_at")):
-        if trash is not None:
-            try:
-                trash.rename(DATA / "outputs" / job_id.hex)
-            except OSError:
-                pass
-        raise HTTPException(404, "找不到输出图")
-    cleanup_output_trash()
+    if trash is not None:
+        shutil.rmtree(trash, ignore_errors=True)
     return {"deleted": True}
 
 

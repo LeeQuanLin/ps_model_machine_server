@@ -4,14 +4,15 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width,initial-scale=1" />
     <title>样机工作台</title>
-    <link rel="stylesheet" href="/static/studio.css?v=4" />
-    <script src="/static/studio.js?v=4" defer></script>
+    <link rel="stylesheet" href="/static/studio.css?v=5" />
+    <script src="/static/studio.js?v=5" defer></script>
   </head>
   <body>
     <aside class="rail">
       <a class="brand" href="#products"><span class="mark" aria-hidden="true">▱</span> 样机工作台</a>
       <nav aria-label="主导航">
         <a href="#products" data-view="products"><span class="icon" data-icon="layers"></span>产品列表</a>
+        <a href="#exports" data-view="exports"><span class="icon" data-icon="archive"></span>导出记录</a>
         <a href="#queue" data-view="queue"><span class="icon" data-icon="queue"></span>任务队列</a>
         <a href="#logs" data-view="logs"><span class="icon" data-icon="logs"></span>日志</a>
         <a href="#outputs" data-view="outputs"><span class="icon" data-icon="gallery"></span>输出图管理</a>
@@ -44,7 +45,7 @@
               <h2 id="recordTitle"></h2>
               <span class="fine" id="recordCount"></span>
             </div>
-            <button class="secondary" id="downloadSelected" disabled>批量下载</button>
+            <button class="secondary" id="exportSelected" disabled>批量导出</button>
           </div>
           <div id="recordsBody"></div>
           <div class="pagination" id="pager" hidden>

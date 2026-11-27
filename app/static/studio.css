@@ -543,6 +543,16 @@ td .mono {
 .product-table {
   min-width: 840px;
 }
+.export-table {
+  min-width: 850px;
+}
+.export-table td:first-child {
+  min-width: 140px;
+  overflow-wrap: anywhere;
+}
+.export-table td:nth-child(n + 4) {
+  white-space: nowrap;
+}
 .product-identity {
   display: flex;
   align-items: center;
@@ -929,6 +939,7 @@ dialog::backdrop {
     grid-column: 1/-1;
     display: flex;
     justify-content: space-between;
+    flex-wrap: wrap;
   }
   .rail nav a {
     padding: 8px;
