@@ -18,14 +18,19 @@ class StorageTest(unittest.TestCase):
         main.DATA = self._data
         self.tmp.cleanup()
 
-    def test_reports_usage_of_the_data_disk(self):
+    def test_reports_disk_and_project_usage(self):
+        nested = Path(self.tmp.name) / "nested"
+        nested.mkdir()
+        (nested / "sample.bin").write_bytes(b"x" * 12345)
+
         data = main.storage()
 
         self.assertTrue(data["drive"])
         self.assertGreater(data["total"], 0)
-        self.assertGreaterEqual(data["used"], 0)
         self.assertGreaterEqual(data["free"], 0)
-        self.assertLessEqual(data["used"], data["total"])
+        self.assertLessEqual(data["free"], data["total"])
+        self.assertEqual(data["project_used"], 12345)
+        self.assertNotIn("used", data)
 
     def test_unreadable_disk_returns_503(self):
         with mock.patch.object(main.shutil, "disk_usage", side_effect=OSError("unavailable")):

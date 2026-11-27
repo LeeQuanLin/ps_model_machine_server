@@ -19,7 +19,8 @@
       <div class="rail-footer">
         <section class="storage" id="storage" aria-label="磁盘空间">
           <p><span>磁盘空间 <small id="diskDrive"></small></span><b id="diskTotal">—</b></p>
-          <p><span>已占用</span><b id="diskUsed">—</b></p>
+          <div class="storage-bar" id="storageBar" role="progressbar" aria-label="可用空间" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0"><i id="diskFreeBar"></i></div>
+          <p class="storage-foot"><span>可用 <b id="diskFree">—</b></span><span title="项目数据目录（data/studio）占用">已占用 <b id="projectUsed">—</b></span></p>
         </section>
         <button class="access" id="access"><i></i><span id="accessLabel">连接工作台</span></button>
       </div>

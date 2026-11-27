@@ -141,6 +141,31 @@ nav a[aria-current="page"] {
   color: #8fa49e;
   font-size: 11px;
 }
+.storage-bar {
+  height: 6px;
+  border-radius: 999px;
+  background: #35504b;
+  overflow: hidden;
+}
+.storage-bar i {
+  display: block;
+  width: 0;
+  height: 100%;
+  border-radius: inherit;
+  background: #b7e6ad;
+  transition: width 0.25s ease;
+}
+.storage-foot {
+  flex-wrap: wrap;
+  row-gap: 2px;
+  font-size: 11px;
+}
+.storage-foot span {
+  white-space: nowrap;
+}
+.storage-foot b {
+  font-size: 11px;
+}
 svg {
   display: block;
   width: 18px;
@@ -698,6 +723,10 @@ dialog::backdrop {
   .storage {
     padding: 9px 10px;
     font-size: 11px;
+  }
+  .storage-foot,
+  .storage-foot b {
+    font-size: 10px;
   }
   main {
     margin-left: 165px;

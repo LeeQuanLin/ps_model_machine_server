@@ -84,7 +84,10 @@ function account(ok) {
   else {
     $("diskDrive").textContent = "";
     $("diskTotal").textContent = "—";
-    $("diskUsed").textContent = "—";
+    $("diskFree").textContent = "—";
+    $("projectUsed").textContent = "—";
+    $("diskFreeBar").style.width = "0%";
+    $("storageBar").setAttribute("aria-valuenow", "0");
   }
 }
 function formatSize(bytes) {
@@ -101,13 +104,20 @@ async function loadStorage() {
   if (!authenticated) return;
   try {
     const data = await (await api("storage")).json();
+    const percent = data.total > 0 ? Math.max(0, Math.min(100, (data.free / data.total) * 100)) : 0;
     $("diskDrive").textContent = data.drive || "";
     $("diskTotal").textContent = formatSize(data.total);
-    $("diskUsed").textContent = formatSize(data.used);
-    $("storage").title = "数据目录所在磁盘：" + (data.drive || "未知");
+    $("diskFree").textContent = formatSize(data.free);
+    $("projectUsed").textContent = formatSize(data.project_used);
+    $("diskFreeBar").style.width = percent.toFixed(1) + "%";
+    $("storageBar").setAttribute("aria-valuenow", String(Math.round(percent)));
+    $("storage").title = "数据目录所在磁盘：" + (data.drive || "未知") + "；已占用为项目数据目录大小";
   } catch {
     $("diskTotal").textContent = "—";
-    $("diskUsed").textContent = "—";
+    $("diskFree").textContent = "—";
+    $("projectUsed").textContent = "—";
+    $("diskFreeBar").style.width = "0%";
+    $("storageBar").setAttribute("aria-valuenow", "0");
   }
 }
 async function api(path, options = {}) {

@@ -1,4 +1,5 @@
 import logging
+import os
 import re
 import secrets
 import shutil
@@ -20,6 +21,17 @@ from app.worker import dispatch
 
 STATIC = ROOT / "app" / "static"
 LIMIT = 50 * 1024 * 1024
+
+
+def directory_size(root):
+    total = 0
+    for directory, _, files in os.walk(root):
+        for name in files:
+            try:
+                total += os.path.getsize(os.path.join(directory, name))
+            except OSError:
+                continue
+    return total
 
 
 def cleanup_output_trash():
@@ -105,8 +117,8 @@ def storage():
     return {
         "drive": DATA.drive or str(DATA.anchor),
         "total": usage.total,
-        "used": usage.used,
         "free": usage.free,
+        "project_used": directory_size(DATA),
     }
 
 
