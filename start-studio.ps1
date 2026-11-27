@@ -24,7 +24,7 @@ import sys
 from urllib.parse import urlsplit
 
 from redis import Redis
-from app.config import BROKER, QUEUE, TOKEN
+from app.config import BROKER, TOKEN
 from app.main import app
 
 if not TOKEN.strip():
@@ -48,13 +48,11 @@ try:
     if not isinstance(catalog.get("items"), list):
         sys.exit("The API port is in use. Check the running service and PHOTOSHOP_API_TOKEN.")
 except ConnectionRefusedError:
-    print("start-api")
-else:
-    print("reuse-api" if catalog.get("queue") == QUEUE else "upgrade-api")
+    pass
 finally:
     conn.close()
 '@
-    $apiState = $probe | & $python - $Port
+    $null = $probe | & $python - $Port
     if ($LASTEXITCODE -ne 0) { throw 'Startup checks failed.' }
     $psApp = New-Object -ComObject Photoshop.Application
     Write-Host "Photoshop $($psApp.Version) / Redis PONG"
@@ -92,12 +90,6 @@ finally:
         return $name
     }
 
-    function Get-DeclaredQueues([string]$commandLine) {
-        $match = [regex]::Match($commandLine, '(?:-Q|--queues)(?:\s+|=)"?([^\s"]+)"?')
-        if (!$match.Success) { return @() }
-        return @($match.Groups[1].Value.Trim('"') -split ',')
-    }
-
     function Get-LocalWorkerGroups {
         $groups = @{}
         foreach ($process in @(Get-ProjectWorkerProcesses)) {
@@ -105,7 +97,6 @@ finally:
             if (!$groups.ContainsKey($node)) {
                 $groups[$node] = [pscustomobject]@{
                     Node = $node
-                    Declared = @(Get-DeclaredQueues $process.CommandLine)
                     Processes = New-Object System.Collections.Generic.List[int]
                     CommandLine = $process.CommandLine
                 }
@@ -115,46 +106,13 @@ finally:
         @($groups.Values)
     }
 
-    function Get-InspectedQueues {
-        $script = @'
-import json
-from app.worker import celery
-
-replies = celery.control.inspect(timeout=4).active_queues() or {}
-print(json.dumps({name: [queue["name"] for queue in queues] for name, queues in replies.items()}))
-'@
-        $raw = $script | & $python -
-        $result = @{}
-        if ($LASTEXITCODE -ne 0 -or !$raw) { return $result }
-        try {
-            $parsed = $raw | ConvertFrom-Json
-            foreach ($property in $parsed.PSObject.Properties) {
-                $result[$property.Name] = @($property.Value)
-            }
-        } catch { }
-        return $result
-    }
-
-    function Get-EffectiveQueues($worker, $inspected) {
-        if ($worker.Declared.Count -gt 0) { return @($worker.Declared) }
-        if ($inspected.ContainsKey($worker.Node)) { return @($inspected[$worker.Node]) }
-        return @()
-    }
-
-    function Test-WorkerUsesQueue($worker, $inspected) {
-        return (Get-EffectiveQueues $worker $inspected) -contains $queue
-    }
-
-    function Stop-StaleProjectWorkers {
+    function Stop-ProjectWorkers {
         $workers = @(Get-LocalWorkerGroups)
-        if (!$workers) { return }
-        $inspected = Get-InspectedQueues
-        $stale = @($workers | Where-Object { -not (Test-WorkerUsesQueue $_ $inspected) })
-        if (!$stale) {
-            Write-Host "Celery worker already consumes $queue."
+        if (!$workers) {
+            Write-Host 'No running project worker.'
             return
         }
-        $nodes = @($stale | ForEach-Object { $_.Node } | Where-Object { $_ } | Select-Object -Unique)
+        $nodes = @($workers | ForEach-Object { $_.Node } | Where-Object { $_ } | Select-Object -Unique)
         if (!$nodes) { throw 'Cannot determine the node name of the local Celery worker.' }
         $shutdown = @'
 import sys
@@ -167,9 +125,9 @@ if names:
     print("shutdown sent to " + ", ".join(names))
 '@
         $message = $shutdown | & $python - $nodes
-        if ($LASTEXITCODE -ne 0) { throw "Cannot ask the old worker to stop: $($nodes -join ', ')" }
+        if ($LASTEXITCODE -ne 0) { throw "Cannot ask the project worker to stop: $($nodes -join ', ')" }
         Write-Host $message
-        $pids = @($stale | ForEach-Object { $_.Processes | ForEach-Object { $_ } } | Sort-Object -Unique)
+        $pids = @($workers | ForEach-Object { $_.Processes | ForEach-Object { $_ } } | Sort-Object -Unique)
         $deadline = (Get-Date).AddSeconds(180)
         while ((Get-Date) -lt $deadline) {
             $alive = @($pids | Where-Object { Get-Process -Id $_ -ErrorAction SilentlyContinue })
@@ -178,59 +136,70 @@ if names:
         }
         $alive = @($pids | Where-Object { Get-Process -Id $_ -ErrorAction SilentlyContinue })
         if ($alive) {
-            $details = ($stale | ForEach-Object {
+            $details = ($workers | ForEach-Object {
                 "node $($_.Node), PID $(($_.Processes) -join ',')`n$($_.CommandLine)"
             }) -join "`n"
-            throw "The old-queue worker is still running. Stop it after the current render finishes, then rerun this script:`n$details"
+            throw "The project worker is still running. Stop it after the current render finishes, then rerun this script:`n$details"
         }
         $remaining = @(Get-LocalWorkerGroups)
         if ($remaining) {
-            Write-Host "Still running Celery workers: $(($remaining | ForEach-Object { $_.Node }) -join ', ')"
+            throw "Project workers are still running: $(($remaining | ForEach-Object { $_.Node }) -join ', ')"
         }
+        Write-Host 'Project worker stopped.'
     }
 
-    if ($apiState -in @('reuse-api', 'upgrade-api')) {
-        $listeners = @(Get-NetTCPConnection -State Listen -LocalPort $Port)
-        if ($apiState -eq 'upgrade-api' -or $listeners.LocalAddress -notcontains '0.0.0.0') {
-            $local = @($listeners | Where-Object { $_.LocalAddress -in @('127.0.0.1','0.0.0.0') })
-            if ($local.Count -ne 1) { throw "Cannot identify the API listener for port $Port." }
-            $ownerId = $local[0].OwningProcess
-            $oldApi = Get-Process -Id $ownerId
-            $owner = Get-CimInstance Win32_Process -Filter "ProcessId=$ownerId"
-            $projectExecutables = @($python, (Join-Path (Split-Path -Parent $python) 'uvicorn.exe'))
-            $uvicornCommand = '\buvicorn(?:\.exe)?"?\s+"?app\.main:app\b'
-            $fromProject = $owner.ExecutablePath -in $projectExecutables
-            if (!$fromProject -and $owner.ParentProcessId) {
-                # A Windows venv launcher can delegate to the base Python executable.
-                $parent = Get-CimInstance Win32_Process -Filter "ProcessId=$($owner.ParentProcessId)"
-                $fromProject = $parent.ExecutablePath -in $projectExecutables -and $parent.CommandLine -match $uvicornCommand
-            }
-            if (!$fromProject -or $owner.CommandLine -notmatch $uvicornCommand) {
-                throw "Stop the API on port $Port (PID $ownerId) in its original terminal, then rerun this script."
-            }
-            Write-Host "Restarting project API (PID $ownerId) with the current queue and bind address."
-            Stop-Process -InputObject $oldApi -ErrorAction Stop
-            if (!$oldApi.WaitForExit(10000)) { throw "API PID $ownerId did not exit." }
-            $apiState = 'start-api'
+    function Stop-ProjectApi {
+        $listeners = @(Get-NetTCPConnection -State Listen -LocalPort $Port -ErrorAction SilentlyContinue)
+        if (!$listeners) {
+            Write-Host 'No running project API.'
+            return
         }
+        $ownerIds = @($listeners | Select-Object -ExpandProperty OwningProcess -Unique)
+        if ($ownerIds.Count -ne 1) { throw "Cannot identify the API listener for port $Port." }
+        $ownerId = $ownerIds[0]
+        $oldApi = Get-Process -Id $ownerId
+        $owner = Get-CimInstance Win32_Process -Filter "ProcessId=$ownerId"
+        if (!$owner) { throw "API listener PID $ownerId disappeared before it could be stopped." }
+        $projectExecutables = @($python, (Join-Path (Split-Path -Parent $python) 'uvicorn.exe'))
+        $uvicornCommand = '\buvicorn(?:\.exe)?"?\s+"?app\.main:app\b'
+        $fromProject = $owner.ExecutablePath -in $projectExecutables
+        if (!$fromProject -and $owner.ParentProcessId) {
+            # A Windows venv launcher can delegate to the base Python executable.
+            $parent = Get-CimInstance Win32_Process -Filter "ProcessId=$($owner.ParentProcessId)"
+            $fromProject = $parent.ExecutablePath -in $projectExecutables -and $parent.CommandLine -match $uvicornCommand
+        }
+        if (!$fromProject -or $owner.CommandLine -notmatch $uvicornCommand) {
+            throw "Port $Port is used by another service (PID $ownerId). Stop it before restarting."
+        }
+        Write-Host "Stopping project API (PID $ownerId)..."
+        Stop-Process -InputObject $oldApi -ErrorAction Stop
+        if (!$oldApi.WaitForExit(10000)) { throw "API PID $ownerId did not exit." }
+        $deadline = (Get-Date).AddSeconds(15)
+        while ((Get-Date) -lt $deadline) {
+            if (!(Get-NetTCPConnection -LocalPort $Port -State Listen -ErrorAction SilentlyContinue)) { break }
+            Start-Sleep -Milliseconds 300
+        }
+        if (Get-NetTCPConnection -LocalPort $Port -State Listen -ErrorAction SilentlyContinue) {
+            throw "API port $Port is still busy after stopping PID $ownerId."
+        }
+        Write-Host 'Project API stopped.'
     }
 
-    # The old API is already stopped at this point (if it had to be upgraded).
-    # Do not let a worker from the old queue keep stealing tasks while the new API starts.
-    Stop-StaleProjectWorkers
+    Write-Host "Restarting the project API and worker (queue: $queue)."
+    # Keep the web API available while a running render finishes, then restart everything.
+    Stop-ProjectWorkers
+    Stop-ProjectApi
 
-    if ($apiState -eq 'start-api') {
-        $api = Start-StudioProcess 'api' @('-m','uvicorn','app.main:app','--host','0.0.0.0','--port',"$Port")
-        $ready = $false
-        for ($i = 0; $i -lt 25; $i++) {
-            if ($api.HasExited) { throw "API exited. See $logDir\api-$stamp.err.log" }
-            try {
-                $page = Invoke-WebRequest -UseBasicParsing -Uri "http://127.0.0.1:$Port/" -TimeoutSec 2
-                if ($page.StatusCode -eq 200) { $ready = $true; break }
-            } catch { Start-Sleep -Milliseconds 400 }
-        }
-        if (!$ready) { throw "API startup not confirmed. See $logDir\api-$stamp.err.log" }
+    $api = Start-StudioProcess 'api' @('-m','uvicorn','app.main:app','--host','0.0.0.0','--port',"$Port")
+    $ready = $false
+    for ($i = 0; $i -lt 50; $i++) {
+        if ($api.HasExited) { throw "API exited. See $logDir\api-$stamp.err.log" }
+        try {
+            $page = Invoke-WebRequest -UseBasicParsing -Uri "http://127.0.0.1:$Port/" -TimeoutSec 2
+            if ($page.StatusCode -eq 200) { $ready = $true; break }
+        } catch { Start-Sleep -Milliseconds 400 }
     }
+    if (!$ready) { throw "API startup not confirmed. See $logDir\api-$stamp.err.log" }
     $bound = @(Get-NetTCPConnection -State Listen -LocalPort $Port)
     if ($bound.LocalAddress -notcontains '0.0.0.0') {
         throw "Expected 0.0.0.0:$Port. Actual listening addresses: $($bound.LocalAddress -join ', ')."
@@ -242,66 +211,37 @@ if names:
         Select-Object -ExpandProperty IPAddress -Unique
     foreach ($address in $lanAddresses) { Write-Host "LAN URL: http://${address}:$Port/" }
 
-    $workers = @(Get-LocalWorkerGroups)
-    if ($workers) {
-        $inspected = Get-InspectedQueues
-        $wrong = @($workers | Where-Object { -not (Test-WorkerUsesQueue $_ $inspected) })
-        if ($wrong.Count) {
-            throw "Local workers are not consuming ${queue}: $(($wrong | ForEach-Object { $_.Node }) -join ', ')"
+    $worker = Start-StudioProcess 'worker' @('-m','celery','-A','app.worker:celery','worker','--pool=solo',
+        '--concurrency=1','-Q',$queue,"--hostname=$queue@%h",'-l','INFO')
+    $workerLog = Join-Path $logDir "worker-$stamp.err.log"
+    $ready = $false
+    for ($i = 0; $i -lt 60; $i++) {
+        if ($worker.HasExited) { throw "Worker exited. See $workerLog" }
+        if (Select-String -LiteralPath $workerLog -Pattern ' ready\.' -Quiet -ErrorAction SilentlyContinue) {
+            $ready = $true; break
         }
-        $needsVerify = @($workers | Where-Object { $_.Declared.Count -eq 0 })
-        if ($needsVerify.Count) {
-            $verify = @'
-import sys
-from app.config import QUEUE
-from app.worker import celery
-
-replies = celery.control.inspect(timeout=4).active_queues() or {}
-for name, queues in replies.items():
-    if any(q["name"] == QUEUE for q in queues):
-        print(f"Desktop worker {name} is consuming {QUEUE}.")
-        break
-else:
-    sys.exit(1)
-'@
-            $verify | & $python -
-            if ($LASTEXITCODE -ne 0) {
-                throw "Worker PID $(($needsVerify | ForEach-Object { $_.Processes }) -join ',') has not confirmed queue $queue. A solo worker may be rendering; check the job log. If idle, restart that project worker and rerun this script."
-            }
-        }
-        Write-Host "Reusing Celery worker on $queue."
-    } else {
-        $worker = Start-StudioProcess 'worker' @('-m','celery','-A','app.worker:celery','worker','--pool=solo',
-            '--concurrency=1','-Q',$queue,"--hostname=$queue@%h",'-l','INFO')
-        $workerLog = Join-Path $logDir "worker-$stamp.err.log"
-        $ready = $false
-        for ($i = 0; $i -lt 60; $i++) {
-            if ($worker.HasExited) { throw "Worker exited. See $workerLog" }
-            if (Select-String -LiteralPath $workerLog -Pattern ' ready\.' -Quiet -ErrorAction SilentlyContinue) {
-                $ready = $true; break
-            }
-            Start-Sleep -Milliseconds 500
-        }
-        if (!$ready) { throw "Worker started (PID $($worker.Id)), readiness not yet confirmed. See $workerLog" }
-        $verify = @'
-import sys
-from app.config import QUEUE
-from app.worker import celery
-
-replies = celery.control.inspect(timeout=4).active_queues() or {}
-for name, queues in replies.items():
-    if any(q["name"] == QUEUE for q in queues):
-        print(f"Desktop worker {name} is consuming {QUEUE}.")
-        break
-else:
-    sys.exit(1)
-'@
-        $verify | & $python -
-        if ($LASTEXITCODE -ne 0) {
-            throw "Worker PID $($worker.Id) has not confirmed queue $queue. See $workerLog"
-        }
-        Write-Host "Celery worker ready (PID $($worker.Id)) on $queue."
+        Start-Sleep -Milliseconds 500
     }
+    if (!$ready) { throw "Worker started (PID $($worker.Id)), readiness not yet confirmed. See $workerLog" }
+    $verify = @'
+import sys
+from app.config import QUEUE
+from app.worker import celery
+
+replies = celery.control.inspect(timeout=4).active_queues() or {}
+for name, queues in replies.items():
+    if any(q["name"] == QUEUE for q in queues):
+        print(f"Desktop worker {name} is consuming {QUEUE}.")
+        break
+else:
+    sys.exit(1)
+'@
+    $verify | & $python -
+    if ($LASTEXITCODE -ne 0) {
+        throw "Worker PID $($worker.Id) has not confirmed queue $queue. See $workerLog"
+    }
+    Write-Host "Celery worker ready (PID $($worker.Id)) on $queue."
+    Write-Host "Full restart complete. Refresh the web page: http://127.0.0.1:$Port/"
 } finally {
     if ($locked) { $mutex.ReleaseMutex() }
     $mutex.Dispose()
