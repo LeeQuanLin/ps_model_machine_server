@@ -1,5 +1,7 @@
+import hashlib
 import os
 import re
+import socket
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -10,7 +12,15 @@ TEMPLATES = ROOT / "templates"
 DATA = Path(os.environ.get("MOCKUP_DATA_DIR", ROOT / "data" / "studio")).resolve()
 BROKER = os.environ.get("CELERY_BROKER_URL", "redis://127.0.0.1:6379/0")
 TOKEN = os.environ.get("PHOTOSHOP_API_TOKEN", "")
-QUEUE = "photoshop.mockups"
+
+
+def queue_name(hostname, data_dir):
+    # Jobs carry an ID; the PSD, uploads and SQLite row all live on the submitting workstation.
+    workspace = f"{hostname.lower()}\n{os.path.normcase(str(data_dir))}"
+    return "photoshop.mockups." + hashlib.sha256(workspace.encode()).hexdigest()[:20]
+
+
+QUEUE = queue_name(socket.gethostname(), DATA)
 _restart_tasks = os.environ.get("PHOTOSHOP_RESTART_AFTER_TASKS", "10").strip()
 if not _restart_tasks.isdecimal() or int(_restart_tasks) < 1:
     raise ValueError("PHOTOSHOP_RESTART_AFTER_TASKS 必须是大于 0 的整数")

@@ -241,7 +241,8 @@ RENDER_SCRIPT = r"""
 """
 
 
-def render(template, output, pairs, *, colors=None, skip_missing=False, on_processed=None):
+def render(template, output, pairs, *, colors=None, skip_missing=False, on_processed=None,
+           on_photoshop_start=None):
     # Photoshop opens private working copies even if the originals are already open.
     with tempfile.TemporaryDirectory(prefix="mockup_", dir=output.parent) as temp:
         folder = Path(temp)
@@ -268,6 +269,8 @@ $ps = New-Object -ComObject Photoshop.Application
 $result = $ps.DoJavaScriptFile($env:MOCKUP_JSX_PATH)
 Write-Output $result
 """
+        if on_photoshop_start:
+            on_photoshop_start()
         process = subprocess.run(
             ["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", command],
             env={**os.environ, "MOCKUP_JSX_PATH": str(script)},

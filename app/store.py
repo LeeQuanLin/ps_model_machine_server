@@ -5,7 +5,7 @@ from contextlib import contextmanager
 from datetime import datetime, timezone
 from uuid import uuid4
 
-from app.config import DATA, revision
+from app.config import DATA, QUEUE, revision
 
 
 def now():
@@ -23,7 +23,7 @@ def database():
         db.close()
 
 
-def initialize():
+def initialize(*, migrate_queue=True):
     DATA.mkdir(parents=True, exist_ok=True)
     (DATA / "inputs").mkdir(exist_ok=True)
     (DATA / "outputs").mkdir(exist_ok=True)
@@ -38,6 +38,9 @@ def initialize():
             );
             CREATE INDEX IF NOT EXISTS job_dispatch ON jobs(status, next_dispatch);
             CREATE INDEX IF NOT EXISTS job_created ON jobs(created_at);
+            CREATE TABLE IF NOT EXISTS delivery_route (
+                id INTEGER PRIMARY KEY CHECK (id = 1), queue TEXT NOT NULL
+            );
             CREATE TABLE IF NOT EXISTS template_rotation (
                 id INTEGER PRIMARY KEY CHECK (id = 1), last_template TEXT NOT NULL
             );
@@ -46,6 +49,16 @@ def initialize():
                 at TEXT NOT NULL, level TEXT NOT NULL, message TEXT NOT NULL
             );
         """)
+        if migrate_queue:
+            db.execute("BEGIN IMMEDIATE")
+            previous = db.execute("SELECT queue FROM delivery_route WHERE id=1").fetchone()
+            if previous is None or previous["queue"] != QUEUE:
+                message = "队列已迁移，等待重新投递到本机 worker"
+                db.execute("""INSERT INTO events(job_id,at,level,message)
+                              SELECT id,?,'info',? FROM jobs WHERE status='queued'""", (now(), message))
+                db.execute("""UPDATE jobs SET status='pending', next_dispatch=0, updated_at=?, detail=?
+                              WHERE status='queued'""", (now(), message))
+                db.execute("INSERT OR REPLACE INTO delivery_route VALUES (1,?)", (QUEUE,))
 
 
 def event(db, job_id, message, level="info"):
@@ -106,8 +119,8 @@ def transition(db, job_id, status, message, level="info", *, expected=None):
         event(db, job_id, message, level)
 
 
-def dispatch_error(job_id):
-    message = "Redis 暂时不可用，稍后自动重新投递"
+def dispatch_error(job_id, exc):
+    message = f"投递到 Redis 失败（{type(exc).__name__}），15 秒后重试"
     with database() as db:
         row = db.execute("SELECT detail FROM jobs WHERE id=? AND status='pending'", (job_id,)).fetchone()
         if row:
@@ -126,7 +139,7 @@ def get(job_id):
 def page(kind, offset, limit):
     with database() as db:
         if kind == "logs":
-            table = "events e JOIN jobs j ON j.id=e.job_id"
+            table = "events e LEFT JOIN jobs j ON j.id=e.job_id"
             fields = "e.id,e.job_id,j.template,e.at,e.level,e.message"
             order = "e.id DESC"
         else:

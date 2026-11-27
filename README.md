@@ -42,7 +42,7 @@ CELERY_BROKER_URL=redis://127.0.0.1:6379/0
 在同一台 Windows 电脑上，以能正常打开 Photoshop 的已登录用户另开一个终端，启动一个串行 worker：
 
 ```powershell
-.\.venv\Scripts\python -m celery -A app.worker:celery worker --pool=solo --concurrency=1 -Q photoshop.mockups -l INFO
+.\.venv\Scripts\python -m celery -A app.worker:celery worker --pool=solo --concurrency=1 -l INFO
 ```
 
 打开 `http://127.0.0.1:8765/`，点击「连接工作台」输入令牌。页面将令牌保存在当前标签页的会话存储中。API 文档位于 `/docs`，业务接口使用 `Authorization: Bearer <令牌>`。
@@ -77,6 +77,14 @@ Worker 打开每个模板的私有副本后递归查找图层，同名时优先�
 1. 提交后，API 将任务和上传图片保存到本地，并返回 HTTP 202 与任务 ID 列表。
 2. API 后台将待投递任务送入 Redis。投递失败后自动重试，API 重启后继续投递尚未发出的任务。
 3. Worker 逐个生成原图与缩略图，将结果和跳过的图层记录在 SQLite。重复收到已完成的任务时复用结果。同一批次的所有任务结束后释放输入图片。
+
+队列名由 Windows 主机名和数据目录生成。即使多台电脑共用一个 Redis，每台也只处理自己的素材。升级时保留原数据目录，在出图电脑的已登录桌面运行 `.\start-studio.ps1`。启动脚本会识别旧版 API，并为专用队列启动 worker。首次启动新版 API 会自动补投旧队列中状态仍为「排队中」的本地任务，沿用原任务 ID 和素材。
+
+多台电脑共用一个 Redis 时，每台电脑都必须运行同一份新版代码，并在升级后重启 API 和 worker；Python 进程不会自动加载新代码。不要手工用旧队列名（`photoshop.mockups`）启动 worker，否则它会抢走其他电脑的任务，而任务素材只存在提交任务的电脑上。启动脚本会先停掉本机仍在旧队列上的 worker，再启动当前队列的 worker；旧 worker 正在出图时会等当前任务结束再退出。如果清理失败，脚本会打印 PID 和命令行，先按提示手工停止后重试。
+
+如果某台电脑只作为浏览器客户端，不要在这台电脑上启动 API 和 worker，直接访问出图电脑输出的 `LAN URL`。如果它也要独立出图，就在那台电脑上部署同一份代码并运行它自己的 `.\start-studio.ps1`；两台电脑的队列互不相同。
+
+在「运行日志」中可查看 worker 启动时使用的队列和数据目录、worker 就绪、实际监听的队列、任务接单、调用 Photoshop、跳过图层和失败原因。任务长时间只有投递记录时，在出图电脑再次运行启动脚本检查 worker 是否订阅了当前队列。正在出图的串行 worker 可能要等当前任务结束才能响应检查。后台进程的原始输出在 `data/studio/logs/` 的 `worker-*.err.log` 和 `worker-*.out.log`。
 
 在项目根目录的 `.env` 中设置 `PHOTOSHOP_RESTART_AFTER_TASKS=10`，指定 Photoshop 每处理多少份样机自动重启一次。可填正整数，未配置时默认 10。修改后重启 Celery worker 生效。每份样机计一次，同一份样机替换多个图层也只计一次。Photoshop 返回生成、跳过或处理错误时均计数。计数保存在数据目录，重启 worker 后继续累计。
 

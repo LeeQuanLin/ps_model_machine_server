@@ -469,6 +469,10 @@ h3 {
 .table-scroll {
   overflow: auto;
 }
+.log-message {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
 table {
   width: 100%;
   border-collapse: collapse;

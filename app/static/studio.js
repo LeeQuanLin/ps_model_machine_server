@@ -353,9 +353,9 @@ function makeTable(items, log) {
     head.append(node("th", title));
   for (const row of items) {
     const tr = body.insertRow(),
-      id = node("span", log ? row.job_id : row.id, "mono");
+      id = node("span", log ? row.job_id || "—" : row.id, "mono");
     const values = log
-      ? [date(row.at), state(row.level, true), row.template, id, row.message]
+      ? [date(row.at), state(row.level, true), row.template || "—", id, node("div", row.message, "log-message")]
       : [id, row.template, state(row.status), date(row.created_at)];
     for (const value of values) {
       const cell = tr.insertCell();

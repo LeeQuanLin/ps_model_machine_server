@@ -1,3 +1,4 @@
+import logging
 import re
 import secrets
 from contextlib import asynccontextmanager
@@ -13,7 +14,7 @@ from fastapi.staticfiles import StaticFiles
 from PIL import Image, UnidentifiedImageError
 
 from app import store
-from app.config import DATA, ROOT, TOKEN, b_side_presets, templates
+from app.config import DATA, QUEUE, ROOT, TOKEN, b_side_presets, templates
 from app.worker import dispatch
 
 STATIC = ROOT / "app" / "static"
@@ -26,6 +27,7 @@ async def lifespan(app):
         raise RuntimeError("请在 .env 中设置 PHOTOSHOP_API_TOKEN")
     app.state.b_side_presets = b_side_presets()
     store.initialize()
+    logging.getLogger("uvicorn.error").info("样机工作台队列 %s，数据目录 %s", QUEUE, DATA)
     stop = Event()
     thread = Thread(target=dispatch, args=(stop,), name="mockup-dispatch", daemon=True)
     thread.start()
@@ -66,7 +68,7 @@ app.mount("/static", StaticFiles(directory=STATIC), name="static")
 
 @app.get("/api/templates")
 def get_templates():
-    return {"items": list(templates())}
+    return {"items": list(templates()), "queue": QUEUE}
 
 
 def save_image(upload, folder, stem):
