@@ -16,7 +16,13 @@
         <a href="#logs" data-view="logs"><span class="icon" data-icon="logs"></span>运行日志</a>
         <a href="#outputs" data-view="outputs"><span class="icon" data-icon="gallery"></span>输出图</a>
       </nav>
-      <button class="access" id="access"><i></i><span id="accessLabel">连接工作台</span></button>
+      <div class="rail-footer">
+        <section class="storage" id="storage" aria-label="磁盘空间">
+          <p><span>磁盘空间 <small id="diskDrive"></small></span><b id="diskTotal">—</b></p>
+          <p><span>已占用</span><b id="diskUsed">—</b></p>
+        </section>
+        <button class="access" id="access"><i></i><span id="accessLabel">连接工作台</span></button>
+      </div>
     </aside>
     <main>
       <header class="top">

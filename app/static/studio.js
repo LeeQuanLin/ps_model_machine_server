@@ -80,6 +80,35 @@ function account(ok) {
   authenticated = ok;
   $("accessLabel").textContent = ok ? "已连接 · 访问设置" : "连接工作台";
   $("access").classList.toggle("online", ok);
+  if (ok) loadStorage();
+  else {
+    $("diskDrive").textContent = "";
+    $("diskTotal").textContent = "—";
+    $("diskUsed").textContent = "—";
+  }
+}
+function formatSize(bytes) {
+  const units = ["B", "KB", "MB", "GB", "TB"];
+  let value = Number(bytes) || 0,
+    index = 0;
+  while (value >= 1024 && index < units.length - 1) {
+    value /= 1024;
+    index++;
+  }
+  return value.toFixed(index >= 3 ? 1 : 0) + " " + units[index];
+}
+async function loadStorage() {
+  if (!authenticated) return;
+  try {
+    const data = await (await api("storage")).json();
+    $("diskDrive").textContent = data.drive || "";
+    $("diskTotal").textContent = formatSize(data.total);
+    $("diskUsed").textContent = formatSize(data.used);
+    $("storage").title = "数据目录所在磁盘：" + (data.drive || "未知");
+  } catch {
+    $("diskTotal").textContent = "—";
+    $("diskUsed").textContent = "—";
+  }
 }
 async function api(path, options = {}) {
   const response = await fetch("/api/" + path, {
@@ -438,6 +467,7 @@ async function removeOutput(row, button) {
     await api("outputs/" + row.id, { method: "DELETE" });
     notice("已删除输出图");
     await refresh();
+    loadStorage();
   } catch (err) {
     notice(err.message);
     button.disabled = false;
@@ -527,3 +557,6 @@ if (token)
 setInterval(() => {
   if (authenticated && !document.hidden && (view === "queue" || view === "logs")) refresh();
 }, 5000);
+setInterval(() => {
+  if (authenticated) loadStorage();
+}, 60000);

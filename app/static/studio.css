@@ -97,7 +97,6 @@ nav a[aria-current="page"] {
   font-weight: 650;
 }
 .access {
-  margin-top: auto;
   border: 1px solid #35504b;
   background: transparent;
 }
@@ -109,6 +108,38 @@ nav a[aria-current="page"] {
 }
 .access.online i {
   background: #a8dda1;
+}
+.rail-footer {
+  margin-top: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.storage {
+  display: grid;
+  gap: 6px;
+  padding: 10px 12px;
+  border: 1px solid #35504b;
+  border-radius: 7px;
+  background: #1d3530;
+  font-size: 12px;
+}
+.storage p {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+  margin: 0;
+  color: #b8c9c4;
+}
+.storage b {
+  color: #fff;
+  font-weight: 600;
+  white-space: nowrap;
+}
+.storage small {
+  color: #8fa49e;
+  font-size: 11px;
 }
 svg {
   display: block;
@@ -664,6 +695,10 @@ dialog::backdrop {
   .brand {
     font-size: 17px;
   }
+  .storage {
+    padding: 9px 10px;
+    font-size: 11px;
+  }
   main {
     margin-left: 165px;
     padding-inline: 18px;
@@ -695,6 +730,12 @@ dialog::backdrop {
   .mark {
     width: 28px;
     height: 28px;
+  }
+  .rail-footer {
+    margin-top: 0;
+  }
+  .storage {
+    display: none;
   }
   .rail nav {
     order: 3;

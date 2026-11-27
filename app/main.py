@@ -96,6 +96,20 @@ def get_templates():
     return {"items": list(templates()), "queue": QUEUE}
 
 
+@app.get("/api/storage")
+def storage():
+    try:
+        usage = shutil.disk_usage(DATA)
+    except OSError as exc:
+        raise HTTPException(503, f"无法读取磁盘空间：{exc}") from exc
+    return {
+        "drive": DATA.drive or str(DATA.anchor),
+        "total": usage.total,
+        "used": usage.used,
+        "free": usage.free,
+    }
+
+
 def save_image(upload, folder, stem):
     temp = folder / (stem + ".upload")
     size = 0
