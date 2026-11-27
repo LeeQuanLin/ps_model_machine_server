@@ -563,13 +563,27 @@ th {
   object-fit: contain;
 }
 .output-card b,
-.output-card small,
-.output-card .textbtn {
+.output-card small {
   display: block;
   margin: 8px 12px 0;
+  overflow-wrap: anywhere;
 }
 .output-card small {
   color: var(--muted);
+}
+.output-actions {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  margin: 8px 12px 0;
+}
+.output-actions .textbtn {
+  display: inline-block;
+  margin: 0;
+  padding: 0;
+}
+.output-actions .danger {
+  color: #a33b32;
 }
 #notice {
   position: fixed;

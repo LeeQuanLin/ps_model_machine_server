@@ -34,7 +34,7 @@ def initialize(*, migrate_queue=True):
                 id TEXT PRIMARY KEY, batch TEXT NOT NULL, template TEXT NOT NULL, revision TEXT NOT NULL,
                 settings TEXT NOT NULL, status TEXT NOT NULL, created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL, detail TEXT NOT NULL DEFAULT '',
-                next_dispatch REAL NOT NULL DEFAULT 0
+                next_dispatch REAL NOT NULL DEFAULT 0, deleted_at TEXT
             );
             CREATE INDEX IF NOT EXISTS job_dispatch ON jobs(status, next_dispatch);
             CREATE INDEX IF NOT EXISTS job_created ON jobs(created_at);
@@ -49,8 +49,11 @@ def initialize(*, migrate_queue=True):
                 at TEXT NOT NULL, level TEXT NOT NULL, message TEXT NOT NULL
             );
         """)
+        db.execute("BEGIN IMMEDIATE")
+        columns = {row["name"] for row in db.execute("PRAGMA table_info(jobs)")}
+        if "deleted_at" not in columns:
+            db.execute("ALTER TABLE jobs ADD COLUMN deleted_at TEXT")
         if migrate_queue:
-            db.execute("BEGIN IMMEDIATE")
             previous = db.execute("SELECT queue FROM delivery_route WHERE id=1").fetchone()
             if previous is None or previous["queue"] != QUEUE:
                 message = "队列已迁移，等待重新投递到本机 worker"
@@ -119,6 +122,27 @@ def transition(db, job_id, status, message, level="info", *, expected=None):
         event(db, job_id, message, level)
 
 
+def mark_output_deleted(db, job_id):
+    row = db.execute(
+        "SELECT detail FROM jobs WHERE id=? AND status='done' AND deleted_at IS NULL", (job_id,)
+    ).fetchone()
+    if not row:
+        return False
+    detail = row["detail"]
+    if "输出图已删除" not in detail:
+        detail = f"{detail}；输出图已删除" if detail else "输出图已删除"
+    stamp = now()
+    updated = db.execute(
+        """UPDATE jobs SET deleted_at=?, updated_at=?, detail=?
+           WHERE id=? AND status='done' AND deleted_at IS NULL""",
+        (stamp, stamp, detail, job_id),
+    )
+    if not updated.rowcount:
+        return False
+    event(db, job_id, "输出图已删除")
+    return True
+
+
 def dispatch_error(job_id, exc):
     message = f"投递到 Redis 失败（{type(exc).__name__}），15 秒后重试"
     with database() as db:
@@ -143,10 +167,16 @@ def page(kind, offset, limit):
             fields = "e.id,e.job_id,j.template,e.at,e.level,e.message"
             order = "e.id DESC"
         else:
-            table = "jobs" + (" WHERE status='done'" if kind == "outputs" else "")
-            fields = "id,template,status,created_at,updated_at,detail"
+            table = "jobs" + (" WHERE status='done' AND deleted_at IS NULL" if kind == "outputs" else "")
+            fields = ("id,template,settings,status,created_at,updated_at,detail"
+                      if kind == "outputs" else "id,template,status,created_at,updated_at,detail")
             order = "created_at DESC, rowid DESC"
         count = db.execute(f"SELECT count(*) FROM {table}").fetchone()[0]
         rows = db.execute(f"SELECT {fields} FROM {table} ORDER BY {order} LIMIT ? OFFSET ?",
                           (limit, offset)).fetchall()
-        return {"items": [dict(row) for row in rows], "total": count}
+        items = [dict(row) for row in rows]
+    if kind == "outputs":
+        for item in items:
+            item["download_name"] = download_name(item)
+            item.pop("settings", None)
+    return {"items": items, "total": count}

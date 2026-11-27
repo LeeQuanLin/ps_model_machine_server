@@ -1,6 +1,7 @@
 import logging
 import re
 import secrets
+import shutil
 from contextlib import asynccontextmanager
 from html import escape
 from pathlib import PureWindowsPath
@@ -21,12 +22,36 @@ STATIC = ROOT / "app" / "static"
 LIMIT = 50 * 1024 * 1024
 
 
+def cleanup_output_trash():
+    outputs = DATA / "outputs"
+    if not outputs.is_dir():
+        return
+    for path in outputs.glob(".deleted-*"):
+        if path.is_dir():
+            shutil.rmtree(path, ignore_errors=True)
+        else:
+            path.unlink(missing_ok=True)
+
+
+def stash_output_folder(job_id):
+    folder = DATA / "outputs" / job_id
+    if not folder.is_dir():
+        return None
+    trash = DATA / "outputs" / f".deleted-{job_id}-{uuid4().hex}"
+    try:
+        folder.rename(trash)
+    except OSError as exc:
+        raise HTTPException(409, "输出图正在下载或被占用，请稍后重试") from exc
+    return trash
+
+
 @asynccontextmanager
 async def lifespan(app):
     if not TOKEN.strip():
         raise RuntimeError("请在 .env 中设置 PHOTOSHOP_API_TOKEN")
     app.state.b_side_presets = b_side_presets()
     store.initialize()
+    cleanup_output_trash()
     logging.getLogger("uvicorn.error").info("样机工作台队列 %s，数据目录 %s", QUEUE, DATA)
     stop = Event()
     thread = Thread(target=dispatch, args=(stop,), name="mockup-dispatch", daemon=True)
@@ -156,10 +181,39 @@ def outputs(offset: int = Query(0, ge=0), limit: int = Query(24, ge=1, le=120)):
     return store.page("outputs", offset, limit)
 
 
+@app.delete("/api/outputs/{job_id}")
+def delete_output(job_id: UUID):
+    job = store.get(job_id.hex)
+    if not job or job["status"] != "done" or job.get("deleted_at"):
+        raise HTTPException(404, "找不到输出图")
+    trash = stash_output_folder(job_id.hex)
+    try:
+        with store.database() as db:
+            deleted = store.mark_output_deleted(db, job_id.hex)
+    except Exception:
+        if trash is not None:
+            try:
+                trash.rename(DATA / "outputs" / job_id.hex)
+            except OSError:
+                pass
+        raise
+    current = store.get(job_id.hex) if not deleted else None
+    if not deleted and not (current and current.get("deleted_at")):
+        if trash is not None:
+            try:
+                trash.rename(DATA / "outputs" / job_id.hex)
+            except OSError:
+                pass
+        raise HTTPException(404, "找不到输出图")
+    cleanup_output_trash()
+    return {"deleted": True}
+
+
 @app.get("/api/outputs/{job_id}/{kind}")
 def output_image(job_id: UUID, kind: str):
     job = store.get(job_id.hex)
-    if not job or job["status"] != "done" or kind not in {"thumbnail", "image", "download"}:
+    if (not job or job["status"] != "done" or job.get("deleted_at")
+            or kind not in {"thumbnail", "image", "download"}):
         raise HTTPException(404, "找不到输出图")
     path = DATA / "outputs" / job_id.hex / ("thumb.png" if kind == "thumbnail" else "render.png")
     if not path.is_file():

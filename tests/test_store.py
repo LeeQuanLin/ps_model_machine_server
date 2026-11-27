@@ -47,13 +47,13 @@ class StoreTest(unittest.TestCase):
         finally:
             db.close()
 
-    def _insert_job(self, job_id, status, *, next_dispatch=0):
+    def _insert_job(self, job_id, status, *, next_dispatch=0, settings='{"colors":{},"images":{}}'):
         db = sqlite3.connect(self.db_path)
         try:
             db.execute(
                 """INSERT INTO jobs(id,batch,template,revision,settings,status,created_at,updated_at,detail,next_dispatch)
                    VALUES (?,?,?,?,?,?,?,?,?,?)""",
-                (job_id, "batch", "template.psd", "1:2", '{"colors":{},"images":{}}', status,
+                (job_id, "batch", "template.psd", "1:2", settings, status,
                  "2026-01-01T00:00:00.000+00:00", "2026-01-01T00:00:00.000+00:00", "", next_dispatch),
             )
             db.commit()
@@ -108,6 +108,54 @@ class StoreTest(unittest.TestCase):
         self._insert_job("later", "pending", next_dispatch=time.time() + 3600)
 
         self.assertIsNone(store.next_delivery())
+
+    def test_initialize_adds_deleted_at_column_idempotently(self):
+        self._create_old_database()
+
+        store.initialize()
+        store.initialize()
+
+        with store.database() as db:
+            columns = {row["name"] for row in db.execute("PRAGMA table_info(jobs)")}
+        self.assertIn("deleted_at", columns)
+
+    def test_outputs_page_exposes_download_name(self):
+        self._create_old_database()
+        store.initialize()
+        custom_id = "0123456789abcdef0123456789abcdef"
+        default_id = "fedcba9876543210fedcba9876543210"
+        self._insert_job(
+            custom_id, "done",
+            settings='{"colors":{},"images":{},"download_name":"春日花园-01.png"}',
+        )
+        self._insert_job(default_id, "done")
+
+        items = {item["id"]: item for item in store.page("outputs", 0, 10)["items"]}
+
+        self.assertEqual(items[custom_id]["download_name"], "春日花园-01.png")
+        self.assertEqual(items[default_id]["download_name"], "template-fedcba98.png")
+        self.assertNotIn("settings", items[custom_id])
+
+    def test_mark_output_deleted_hides_only_the_outputs_page(self):
+        self._create_old_database()
+        store.initialize()
+        self._insert_job("done", "done")
+
+        with store.database() as db:
+            self.assertTrue(store.mark_output_deleted(db, "done"))
+        with store.database() as db:
+            self.assertFalse(store.mark_output_deleted(db, "done"))
+
+        self.assertEqual(store.page("outputs", 0, 10)["total"], 0)
+        self.assertEqual(store.page("jobs", 0, 10)["total"], 1)
+        job = store.get("done")
+        self.assertIsNotNone(job["deleted_at"])
+        self.assertIn("输出图已删除", job["detail"])
+        with store.database() as db:
+            event = db.execute(
+                "SELECT level,message FROM events WHERE job_id='done' AND message='输出图已删除'"
+            ).fetchone()
+        self.assertEqual(event["level"], "info")
 
 
 if __name__ == "__main__":

@@ -383,7 +383,7 @@ async function original(row, download) {
       if (viewerUrl) URL.revokeObjectURL(viewerUrl);
       viewerUrl = url;
       $("fullImage").src = url;
-      $("viewerTitle").textContent = row.template;
+      $("viewerTitle").textContent = outputName(row);
       if (!$("viewer").open) $("viewer").showModal();
     }
   } catch (err) {
@@ -395,18 +395,27 @@ $("viewer").onclose = () => {
   viewerUrl = null;
   $("fullImage").removeAttribute("src");
 };
+function outputName(row) {
+  return row.download_name || row.template;
+}
 function gallery(items, seq) {
   const grid = node("div", undefined, "outputs");
   for (const row of items) {
-    const card = node("article", undefined, "output-card"),
+    const name = outputName(row),
+      card = node("article", undefined, "output-card"),
       preview = node("button"),
       img = node("img");
-    img.alt = row.template;
+    img.alt = name;
     preview.append(img);
     preview.onclick = () => original(row, false);
-    const download = node("button", "下载 PNG", "textbtn");
+    const actions = node("div", undefined, "output-actions"),
+      download = node("button", "下载 PNG", "textbtn"),
+      remove = node("button", "删除", "textbtn danger");
     download.onclick = () => original(row, true);
-    card.append(preview, node("b", row.template), node("small", date(row.updated_at)), download);
+    remove.setAttribute("aria-label", "删除 " + name);
+    remove.onclick = () => removeOutput(row, remove);
+    actions.append(download, remove);
+    card.append(preview, node("b", name), node("small", row.template + " · " + date(row.updated_at)), actions);
     grid.append(card);
     api("outputs/" + row.id + "/thumbnail")
       .then((r) => r.blob())
@@ -421,6 +430,18 @@ function gallery(items, seq) {
       });
   }
   return grid;
+}
+async function removeOutput(row, button) {
+  if (!confirm("确定删除「" + outputName(row) + "」的输出图吗？删除后无法恢复。")) return;
+  button.disabled = true;
+  try {
+    await api("outputs/" + row.id, { method: "DELETE" });
+    notice("已删除输出图");
+    await refresh();
+  } catch (err) {
+    notice(err.message);
+    button.disabled = false;
+  }
 }
 function releaseThumbs() {
   thumbUrls.forEach((url) => URL.revokeObjectURL(url));
