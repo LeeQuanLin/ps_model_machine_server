@@ -271,9 +271,12 @@ RENDER_SCRIPT = r"""
                 fillColor(task.layer, task.pair.color);
         }
         if (!targets.length) return "SKIP";
-        stage = "导出 PNG";
         app.activeDocument = work;
-        savePng(work, job.output);
+        if (job.exportMockup) {
+            stage = "导出 PNG";
+            savePng(work, job.output);
+        }
+        if (!job.exportSubject) return "OK:" + skipped.join(",");
         stage = "导出主体透明图";
         var subjects = [];
         findSubject(work.layerSets, [], subjects);
@@ -303,7 +306,7 @@ def transparent_path(output):
 
 
 def render(template, output, pairs, *, colors=None, skip_missing=False, on_processed=None,
-           on_photoshop_start=None):
+           on_photoshop_start=None, export_mockup=True, export_subject=True):
     # Photoshop opens private working copies even if the originals are already open.
     with tempfile.TemporaryDirectory(prefix="mockup_", dir=output.parent) as temp:
         folder = Path(temp)
@@ -321,7 +324,8 @@ def render(template, output, pairs, *, colors=None, skip_missing=False, on_proce
                           "replacement": str(folder / f"replacement{index}.psd")})
 
         job = {"template": str(template_copy), "pairs": tasks, "output": str(staged),
-               "transparentOutput": str(staged_subject), "skipMissing": skip_missing}
+               "transparentOutput": str(staged_subject), "skipMissing": skip_missing,
+               "exportMockup": export_mockup, "exportSubject": export_subject}
         script = folder / "render.jsx"
         script.write_text("#target photoshop\nvar job = " + json.dumps(job) + ";\n" + RENDER_SCRIPT,
                           encoding="utf-8-sig")
@@ -346,20 +350,24 @@ Write-Output $result
         if not process.returncode and result == "SKIP":
             return [name for name, _ in pairs]
         status, _, indices = result.partition(":")
-        if process.returncode or not result.startswith(("OK:", "NO_SUBJECT:")) or not staged.is_file():
+        if process.returncode or not result.startswith(("OK:", "NO_SUBJECT:")):
             raise RuntimeError(process.stderr.strip() or result or "Photoshop 未生成 PNG")
+        if export_mockup and not staged.is_file():
+            raise RuntimeError("Photoshop 未生成样机合成图")
+        if not export_mockup and status == "NO_SUBJECT":
+            raise RuntimeError("样机缺少「主体」分组，无法生成透明图")
         skipped = [pairs[int(index)][0] for index in indices.split(",") if index]
         # On Windows rename publishes a completed file and refuses an existing destination.
-        if status == "OK":
+        if status == "OK" and export_subject:
             subject = transparent_path(output)
             staged_subject.rename(subject)
+        if export_mockup:
             try:
                 staged.rename(output)
             except OSError:
-                subject.unlink()
+                if status == "OK" and export_subject:
+                    subject.unlink()
                 raise
-        else:
-            staged.rename(output)
         return skipped
 
 

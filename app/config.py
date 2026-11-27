@@ -9,6 +9,12 @@ from dotenv import load_dotenv
 ROOT = Path(__file__).resolve().parents[1]
 load_dotenv(ROOT / ".env")
 TEMPLATES = ROOT / "templates"
+DEFAULT_DETAIL_TEMPLATE = "详情页模板.psd"
+DETAIL_TEMPLATE = os.environ.get("DETAIL_PAGE_TEMPLATE", "").strip().replace("\\", "/") or DEFAULT_DETAIL_TEMPLATE
+DETAIL_TEMPLATE_NAMES = (
+    (DEFAULT_DETAIL_TEMPLATE, "详情页模板.psb")
+    if DETAIL_TEMPLATE.casefold() == DEFAULT_DETAIL_TEMPLATE.casefold() else (DETAIL_TEMPLATE,)
+)
 DATA = Path(os.environ.get("MOCKUP_DATA_DIR", ROOT / "data" / "studio")).resolve()
 BROKER = os.environ.get("CELERY_BROKER_URL", "redis://127.0.0.1:6379/0")
 TOKEN = os.environ.get("PHOTOSHOP_API_TOKEN", "")
@@ -41,10 +47,20 @@ def b_side_presets():
     return presets
 
 
-def templates():
+def template_files():
     return {p.relative_to(TEMPLATES).as_posix(): p for p in sorted(TEMPLATES.rglob("*"))
             if p.suffix.lower() in {".psd", ".psb"} and p.is_file()
             and p.resolve().is_relative_to(TEMPLATES.resolve())}
+
+
+def detail_template():
+    available = {name.casefold(): path for name, path in template_files().items()}
+    return next((available[name.casefold()] for name in DETAIL_TEMPLATE_NAMES if name.casefold() in available), None)
+
+
+def templates():
+    detail_names = {name.casefold() for name in DETAIL_TEMPLATE_NAMES}
+    return {name: path for name, path in template_files().items() if name.casefold() not in detail_names}
 
 
 def revision(path):

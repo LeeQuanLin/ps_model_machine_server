@@ -1,26 +1,42 @@
 import logging
+import ntpath
 import os
 import re
 import secrets
 import shutil
+import unicodedata
+from collections.abc import Iterable
 from contextlib import asynccontextmanager
 from html import escape
-from pathlib import PureWindowsPath
+from pathlib import Path, PureWindowsPath
+from tempfile import NamedTemporaryFile
 from threading import Event, Thread
 from typing import Annotated
 from uuid import UUID, uuid4
+from zipfile import ZipFile
 
 from fastapi import FastAPI, File, Form, HTTPException, Query, Request, UploadFile
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from PIL import Image, UnidentifiedImageError
+from pydantic import BaseModel, Field
+from starlette.background import BackgroundTask
 
-from app import store
-from app.config import DATA, QUEUE, ROOT, TOKEN, b_side_presets, templates
-from app.worker import dispatch
+from app import products, store
+from app.config import DATA, QUEUE, ROOT, TOKEN, b_side_presets, detail_template, templates
+from app.worker import dispatch, release_inputs
 
 STATIC = ROOT / "app" / "static"
 LIMIT = 50 * 1024 * 1024
+INVALID_FILENAME = re.compile(r'[<>:"/\\|?*\x00-\x1f]')
+
+
+class ProductForm(BaseModel):
+    name: str
+
+
+class ProductSelection(BaseModel):
+    ids: list[UUID] = Field(min_length=1)
 
 
 def directory_size(root):
@@ -75,7 +91,7 @@ async def lifespan(app):
         thread.join(timeout=8)
 
 
-app = FastAPI(title="样机工作台", lifespan=lifespan)
+app = FastAPI(title="样机工作台", version="2.0.0", lifespan=lifespan)
 
 
 @app.middleware("http")
@@ -105,7 +121,8 @@ app.mount("/static", StaticFiles(directory=STATIC), name="static")
 
 @app.get("/api/templates")
 def get_templates():
-    return {"items": list(templates()), "queue": QUEUE}
+    detail = detail_template()
+    return {"items": list(templates()), "queue": QUEUE, "detail_template": detail.name if detail else None}
 
 
 @app.get("/api/storage")
@@ -142,6 +159,29 @@ def save_image(upload, folder, stem):
     return target.name
 
 
+def layer_settings(folder, a_image, pillow_image, b_color, background_color):
+    colors = {"B面": b_color, "背景": background_color}
+    if not all(re.fullmatch(r"#[0-9a-fA-F]{6}", color) for color in colors.values()):
+        raise HTTPException(422, "颜色应为六位十六进制色值")
+    images = {}
+    for layer, upload, stem in (("A面", a_image, "a"), ("枕套", pillow_image, "pillow")):
+        if upload is not None:
+            images[layer] = save_image(upload, folder, stem)
+    return {"images": images, "colors": colors}
+
+
+def product_name(value, label):
+    name = unicodedata.normalize("NFC", value.strip())
+    filename = f"{name}.png"
+    reserved = ntpath.isreserved(filename) if hasattr(ntpath, "isreserved") else PureWindowsPath(filename).is_reserved()
+    if (not name or name.endswith(".") or INVALID_FILENAME.search(name)
+            or reserved
+            or len(name.encode("utf-8", errors="replace")) > 200
+            or any(0xD800 <= ord(char) <= 0xDFFF for char in name)):
+        raise HTTPException(422, f"请输入有效的{label}，文件名部分最多 200 字节")
+    return name
+
+
 @app.post("/api/jobs", status_code=202)
 def submit(
     b_color: Annotated[str, Form()],
@@ -158,9 +198,6 @@ def submit(
         if (not name or name.endswith((" ", ".")) or re.search(r'[<>:"/\\|?*\x00-\x1f]', name)
                 or PureWindowsPath(name + ".png").is_reserved()):
             raise HTTPException(422, "请输入有效的输出文件名，不能包含路径或 Windows 文件名禁用字符")
-    colors = {"B面": b_color, "背景": background_color}
-    if not all(re.fullmatch(r"#[0-9a-fA-F]{6}", color) for color in colors.values()):
-        raise HTTPException(422, "颜色应为六位十六进制色值")
     available = templates()
     if not available:
         raise HTTPException(422, "templates 目录中没有 PSD 或 PSB 样机")
@@ -178,11 +215,8 @@ def submit(
     folder = DATA / "inputs" / batch
     folder.mkdir()
     try:
-        images = {}
-        for layer, upload, stem in (("A面", a_image, "a"), ("枕套", pillow_image, "pillow")):
-            if upload is not None:
-                images[layer] = save_image(upload, folder, stem)
-        ids = store.submit(batch, available, {"images": images, "colors": colors},
+        settings = layer_settings(folder, a_image, pillow_image, b_color, background_color)
+        ids = store.submit(batch, available, settings,
                            sequential=template == "sequential", output_name=name)
     except Exception:
         for path in folder.iterdir():
@@ -190,6 +224,138 @@ def submit(
         folder.rmdir()
         raise
     return {"ids": ids, "count": len(ids)}
+
+
+@app.get("/api/products")
+def list_products(offset: int = Query(0, ge=0), limit: int = Query(24, ge=1, le=120)):
+    return products.page(offset, limit)
+
+
+@app.get("/api/products/{product_id}")
+def get_product(product_id: UUID):
+    product = products.get(product_id.hex)
+    if product is None:
+        raise HTTPException(404, "找不到产品")
+    return product
+
+
+@app.put("/api/products/{product_id}/draft")
+def create_product(product_id: UUID, form: ProductForm):
+    return products.create(product_id.hex, product_name(form.name, "产品名"))
+
+
+@app.post("/api/products/{product_id}/skus/{sku_id}", status_code=202)
+def submit_sku(
+    product_id: UUID,
+    sku_id: UUID,
+    sku_name: Annotated[str, Form()],
+    template: Annotated[str, Form()],
+    b_color: Annotated[str, Form()],
+    background_color: Annotated[str, Form()],
+    a_image: Annotated[UploadFile | None, File()] = None,
+    pillow_image: Annotated[UploadFile | None, File()] = None,
+):
+    name = product_name(sku_name, "SKU 名")
+    product = get_product(product_id)
+    if any(sku["id"] == sku_id.hex for sku in product["skus"]):
+        return product
+    if product["saved_at"]:
+        raise HTTPException(409, "产品已保存，无法添加 SKU")
+    available = templates()
+    if not available:
+        raise HTTPException(422, "templates 目录中没有可用的样机模板")
+    if template not in {"random", "sequential"} and template not in available:
+        raise HTTPException(422, "请选择一个样机模板")
+    batch = uuid4().hex
+    folder = DATA / "inputs" / batch
+    folder.mkdir()
+    inserted = False
+    try:
+        settings = layer_settings(folder, a_image, pillow_image, b_color, background_color)
+        result, inserted = products.add_sku(product_id.hex, sku_id.hex, batch, name, template,
+                                            available, settings)
+        return result
+    except products.ProductConflict as exc:
+        raise HTTPException(409, str(exc)) from exc
+    except FileNotFoundError as exc:
+        raise HTTPException(409, "样机模板已移除，请重新选择") from exc
+    finally:
+        if not inserted:
+            shutil.rmtree(folder)
+
+
+@app.put("/api/products/{product_id}/save", status_code=202)
+def save_product(product_id: UUID, form: ProductForm):
+    name = product_name(form.name, "产品名")
+    try:
+        result, batches = products.save(product_id.hex, name, detail_template())
+    except LookupError as exc:
+        raise HTTPException(404, str(exc)) from exc
+    except (products.ProductConflict, FileNotFoundError) as exc:
+        raise HTTPException(409, str(exc)) from exc
+    for batch in batches:
+        release_inputs(batch)
+    return result
+
+
+def zip_response(files: Iterable[tuple[Path, str]], filename: str):
+    with NamedTemporaryFile(dir=DATA, prefix="download-", suffix=".zip", delete=False) as tmp:
+        path = Path(tmp.name)
+    try:
+        # PNGs are already compressed. Store them directly in the archive.
+        with ZipFile(path, "w") as archive:
+            for source, name in files:
+                archive.write(source, name)
+    except BaseException:
+        path.unlink(missing_ok=True)
+        raise
+    return FileResponse(path, media_type="application/zip", filename=filename,
+                        background=BackgroundTask(path.unlink, missing_ok=True))
+
+
+def product_archive(ids, *, batch=False):
+    files = []
+    used_names = set()
+    with store.database() as db:
+        db.execute("BEGIN")
+        for product_id in ids:
+            product = products.find(db, product_id)
+            if product is None:
+                raise HTTPException(404, "找不到所选产品")
+            jobs = products.product_jobs(db, product_id)
+            if not products.summarize(product, jobs)["downloadable"]:
+                raise HTTPException(409, f"「{product['name']}」的输出未完成或已删除")
+            name = prefix = product["name"]
+            suffix = 2
+            while prefix.casefold() in used_names:
+                prefix = f"{name} ({suffix})"
+                suffix += 1
+            used_names.add(prefix.casefold())
+            for job in jobs:
+                folder = DATA / "outputs" / job["id"]
+                if job["kind"] == "detail":
+                    slices = store.detail_slices(folder)
+                    if not slices:
+                        raise HTTPException(409, f"「{name}」的详情页切片已丢失")
+                    files.extend((path, f"{prefix}/详情页/{path.name}") for path in slices)
+                elif job["kind"] == "subject":
+                    files.append((folder / "subject.png", f"{prefix}/透明图/{store.download_name(job)}"))
+                else:
+                    files.append((folder / "render.png", f"{prefix}/样机图/{store.download_name(job)}"))
+    try:
+        return zip_response(files, "产品输出图.zip" if batch else f"{name}.zip")
+    except FileNotFoundError as exc:
+        raise HTTPException(409, "部分输出文件已丢失，请刷新产品列表") from exc
+
+
+@app.get("/api/products/{product_id}/download")
+def download_product(product_id: UUID):
+    return product_archive([product_id.hex])
+
+
+@app.post("/api/products/download")
+def download_products(selection: ProductSelection):
+    return product_archive(dict.fromkeys(product_id.hex for product_id in selection.ids), batch=True)
 
 
 @app.get("/api/jobs")
@@ -212,6 +378,9 @@ def delete_output(job_id: UUID):
     job = store.get(job_id.hex)
     if not job or job["status"] != "done" or job.get("deleted_at"):
         raise HTTPException(404, "找不到输出图")
+    with store.database() as db:
+        if not store.can_delete_output(db, job["product_id"]):
+            raise HTTPException(409, "产品任务仍需要该输出图，请在流程结束后删除")
     trash = stash_output_folder(job_id.hex)
     try:
         with store.database() as db:
@@ -236,19 +405,33 @@ def delete_output(job_id: UUID):
 
 
 @app.get("/api/outputs/{job_id}/{kind}")
-def output_image(job_id: UUID, kind: str):
-    files = {"thumbnail": "thumb.png", "image": "render.png", "download": "render.png",
-             "transparent": "subject.png"}
+def output_image(job_id: UUID, kind: str, slice_name: str | None = None):
     job = store.get(job_id.hex)
-    if (not job or job["status"] != "done" or job.get("deleted_at")
-            or kind not in files):
+    if not job or job["status"] != "done" or job.get("deleted_at"):
         raise HTTPException(404, "找不到输出图")
-    path = DATA / "outputs" / job_id.hex / files[kind]
+    folder = DATA / "outputs" / job_id.hex
+    name = store.download_name(job) if kind == "download" else None
+    if kind == "thumbnail":
+        path = folder / "thumb.png"
+    elif job["kind"] == "detail":
+        if kind == "download":
+            slices = store.detail_slices(folder)
+            if not slices:
+                raise HTTPException(404, "详情页切片已移除")
+            try:
+                return zip_response(((path, path.name) for path in slices), name)
+            except FileNotFoundError as exc:
+                raise HTTPException(404, "详情页切片已移除") from exc
+        if kind != "image" or (slice_name is not None and not re.fullmatch(r"[0-9]{3,}\.png", slice_name)):
+            raise HTTPException(404, "找不到详情页切片")
+        path = folder / "slices" / (slice_name or "001.png")
+    elif kind == "transparent" and job["kind"] == "mockup":
+        path = folder / "subject.png"
+        name = PureWindowsPath(store.download_name(job)).stem + "-透明图.png"
+    elif kind in {"image", "download"}:
+        path = folder / ("subject.png" if job["kind"] == "subject" else "render.png")
+    else:
+        raise HTTPException(404, "找不到输出图")
     if not path.is_file():
         raise HTTPException(404, "输出文件已移除")
-    name = None
-    if kind in {"download", "transparent"}:
-        name = store.download_name(job)
-        if kind == "transparent":
-            name = PureWindowsPath(name).stem + "-透明图.png"
     return FileResponse(path, media_type="image/png", filename=name)

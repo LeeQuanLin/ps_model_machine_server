@@ -1,4 +1,5 @@
 import json
+import re
 import sqlite3
 import time
 from contextlib import contextmanager
@@ -6,6 +7,8 @@ from datetime import datetime, timezone
 from uuid import uuid4
 
 from app.config import DATA, QUEUE, revision
+
+TERMINAL = {"done", "skipped", "failed"}
 
 
 def now():
@@ -48,11 +51,20 @@ def initialize(*, migrate_queue=True):
                 id INTEGER PRIMARY KEY AUTOINCREMENT, job_id TEXT NOT NULL,
                 at TEXT NOT NULL, level TEXT NOT NULL, message TEXT NOT NULL
             );
+            CREATE TABLE IF NOT EXISTS products (
+                id TEXT PRIMARY KEY, name TEXT NOT NULL, created_at TEXT NOT NULL, saved_at TEXT
+            );
         """)
         db.execute("BEGIN IMMEDIATE")
         columns = {row["name"] for row in db.execute("PRAGMA table_info(jobs)")}
         if "deleted_at" not in columns:
             db.execute("ALTER TABLE jobs ADD COLUMN deleted_at TEXT")
+        if "product_id" not in columns:
+            db.execute("ALTER TABLE jobs ADD COLUMN product_id TEXT")
+        if "kind" not in columns:
+            db.execute("ALTER TABLE jobs ADD COLUMN kind TEXT NOT NULL DEFAULT 'mockup'")
+        db.execute("CREATE INDEX IF NOT EXISTS job_product ON jobs(product_id)")
+        db.execute("CREATE INDEX IF NOT EXISTS job_batch ON jobs(batch)")
         if migrate_queue:
             previous = db.execute("SELECT queue FROM delivery_route WHERE id=1").fetchone()
             if previous is None or previous["queue"] != QUEUE:
@@ -75,29 +87,42 @@ def download_name(job):
     return custom or f"{stem}-{job['id'][:8]}.png"
 
 
+def rotate_template(db, selected):
+    # Call inside a write transaction so the rotation only advances on commit.
+    row = db.execute("SELECT last_template FROM template_rotation WHERE id=1").fetchone()
+    names = list(selected)
+    index = names.index(row["last_template"]) + 1 if row and row["last_template"] in selected else 0
+    name = names[index % len(names)]
+    db.execute("INSERT OR REPLACE INTO template_rotation(id,last_template) VALUES (1,?)", (name,))
+    return name
+
+
+def insert_job(db, job_id, batch, template, template_revision, settings, *,
+               product_id=None, kind="mockup", status="pending", message="任务已保存，等待投递"):
+    stamp = now()
+    db.execute("""INSERT INTO jobs(id,batch,template,revision,settings,status,created_at,updated_at,
+                                   detail,product_id,kind)
+                  VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
+               (job_id, batch, template, template_revision, json.dumps(settings), status, stamp, stamp,
+                message, product_id, kind))
+    event(db, job_id, message)
+
+
 def submit(batch, selected, settings, *, sequential=False, output_name=""):
     ids = []
-    stamp = now()
     with database() as db:
         if sequential:
             # Advance only when this submission commits, including across API workers.
             db.execute("BEGIN IMMEDIATE")
-            row = db.execute("SELECT last_template FROM template_rotation WHERE id=1").fetchone()
-            names = list(selected)
-            index = names.index(row["last_template"]) + 1 if row and row["last_template"] in selected else 0
-            name = names[index % len(names)]
+            name = rotate_template(db, selected)
             selected = {name: selected[name]}
-            db.execute("INSERT OR REPLACE INTO template_rotation(id,last_template) VALUES (1,?)", (name,))
         for index, (name, path) in enumerate(selected.items(), start=1):
             job_id = uuid4().hex
             job_settings = settings
             if output_name:
                 suffix = f"-{index:02d}" if len(selected) > 1 else ""
                 job_settings = {**settings, "download_name": f"{output_name}{suffix}.png"}
-            db.execute("""INSERT INTO jobs(id,batch,template,revision,settings,status,created_at,updated_at)
-                          VALUES (?,?,?,?,?,'pending',?,?)""",
-                       (job_id, batch, name, revision(path), json.dumps(job_settings), stamp, stamp))
-            event(db, job_id, "任务已保存，等待投递")
+            insert_job(db, job_id, batch, name, revision(path), job_settings)
             ids.append(job_id)
     return ids
 
@@ -160,24 +185,48 @@ def get(job_id):
         return dict(row) if row else None
 
 
+def detail_slices(folder):
+    return sorted((path for path in (folder / "slices").glob("*.png")
+                   if re.fullmatch(r"[0-9]{3,}\.png", path.name)), key=lambda path: int(path.stem))
+
+
+def can_delete_output(db, product_id):
+    if not product_id:
+        return True
+    return bool(db.execute("""SELECT 1 FROM jobs WHERE product_id=? AND kind='detail'
+                              AND status IN ('done','failed','skipped')""", (product_id,)).fetchone())
+
+
 def page(kind, offset, limit):
     with database() as db:
         if kind == "logs":
-            table = "events e LEFT JOIN jobs j ON j.id=e.job_id"
-            fields = "e.id,e.job_id,j.template,e.at,e.level,e.message"
+            table = "events e LEFT JOIN jobs j ON j.id=e.job_id LEFT JOIN products p ON p.id=j.product_id"
+            fields = "e.id,e.job_id,j.template,j.kind,p.name AS product_name,e.at,e.level,e.message"
             order = "e.id DESC"
         else:
-            table = "jobs" + (" WHERE status='done' AND deleted_at IS NULL" if kind == "outputs" else "")
-            fields = ("id,template,settings,status,created_at,updated_at,detail"
-                      if kind == "outputs" else "id,template,status,created_at,updated_at,detail")
-            order = "created_at DESC, rowid DESC"
+            table = "jobs j LEFT JOIN products p ON p.id=j.product_id"
+            if kind == "outputs":
+                table += " WHERE j.status='done' AND j.deleted_at IS NULL"
+            fields = ("j.id,j.template,j.kind,j.settings,j.status,j.created_at,j.updated_at,j.detail,"
+                      "j.product_id,p.name AS product_name")
+            order = "j.created_at DESC, j.rowid DESC"
         count = db.execute(f"SELECT count(*) FROM {table}").fetchone()[0]
         rows = db.execute(f"SELECT {fields} FROM {table} ORDER BY {order} LIMIT ? OFFSET ?",
                           (limit, offset)).fetchall()
         items = [dict(row) for row in rows]
-    if kind == "outputs":
-        for item in items:
+        if kind == "outputs":
+            for item in items:
+                item["can_delete"] = can_delete_output(db, item["product_id"])
+    if kind == "logs":
+        return {"items": items, "total": count}
+    for item in items:
+        settings = json.loads(item["settings"])
+        item["sku_name"] = settings.get("sku_name")
+        if kind == "outputs":
             item["download_name"] = download_name(item)
-            item["has_transparent"] = (DATA / "outputs" / item["id"] / "subject.png").is_file()
-            item.pop("settings", None)
+            folder = DATA / "outputs" / item["id"]
+            item["has_transparent"] = item["kind"] == "mockup" and (folder / "subject.png").is_file()
+            if item["kind"] == "detail":
+                item["slices"] = [path.name for path in detail_slices(folder)]
+        item.pop("settings")
     return {"items": items, "total": count}

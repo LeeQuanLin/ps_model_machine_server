@@ -1,14 +1,21 @@
 "use strict";
 const $ = (id) => document.getElementById(id);
-const names = { generate: "生成样机", queue: "任务队列", logs: "运行日志", outputs: "输出图" };
-const titles = { queue: "队列记录", logs: "任务日志", outputs: "已生成图片" };
+const names = { products: "产品列表", queue: "任务队列", logs: "日志", outputs: "输出图管理" };
+const titles = { products: "全部产品", queue: "队列记录", logs: "任务日志", outputs: "已生成图片" };
+const kinds = { mockup: "样机图", subject: "透明图", detail: "详情页" };
 const states = {
+  draft: "草稿",
+  blocked: "等待前置任务",
   pending: "待投递",
   queued: "排队中",
   running: "生成中",
   done: "已完成",
   failed: "失败",
   skipped: "已跳过",
+  mockups: "生成 SKU 样机",
+  subject: "生成透明图",
+  detail: "制作详情页",
+  removed: "输出已删除",
 };
 const icons = {
   layers: "M3 8l9-5 9 5-9 5z M3 12l9 5 9-5 M3 16l9 5 9-5",
@@ -57,15 +64,25 @@ function notice(text) {
 }
 let token = sessionStorage.getItem("mockup-token") || "",
   authenticated = false,
-  templateCount = 0;
-let view = "generate",
+  templateCount = 0,
+  detailTemplate = null;
+let view = "products",
   offset = 0,
   sequence = 0,
   busy = false,
   auto = true,
   theme = null,
   thumbUrls = [],
-  viewerUrl;
+  viewerUrl,
+  viewerSequence = 0,
+  draft,
+  draftId,
+  skuId,
+  openingProduct = false,
+  productBusy = false,
+  batchBusy = false,
+  lastRecords = "";
+const selected = new Set();
 const limit = 24,
   assets = { art: null, pillow: null },
   loading = { art: false, pillow: false },
@@ -159,14 +176,14 @@ $("loginForm").onsubmit = async (event) => {
   }
 };
 function scope() {
-  const count = $("template").value ? Math.min(templateCount, 1) : templateCount;
-  $("scope").textContent = authenticated ? "本次生成 " + count + " 个样机" : "连接后可选择样机";
+  $("scope").textContent = templateCount ? "每个 SKU 使用一款样机" : "没有可用的样机模板";
   $("submit").disabled = busy || loading.art || loading.pillow || (authenticated && !templateCount);
 }
 async function loadTemplates() {
   const data = await (await api("templates")).json();
   const current = $("template").value;
   templateCount = data.items.length;
+  detailTemplate = data.detail_template;
   $("templateFiles").replaceChildren(...data.items.map((name) => new Option(name, name)));
   if (data.items.includes(current)) $("template").value = current;
   account(true);
@@ -339,37 +356,167 @@ $("manualColor").onclick = () => {
   auto = false;
   sync();
 };
-$("submit").onclick = async () => {
-  if (!authenticated) {
-    login();
-    return;
+function newId() {
+  // getRandomValues also works when the studio is opened over its LAN HTTP address.
+  return Array.from(crypto.getRandomValues(new Uint8Array(16)), (byte) =>
+    byte.toString(16).padStart(2, "0"),
+  ).join("");
+}
+function jsonOptions(method, payload) {
+  return { method, headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload) };
+}
+function skuList() {
+  const items = draft?.skus || [];
+  $("skuCount").textContent = items.length + " 项";
+  if (!items.length) {
+    $("skuList").replaceChildren(node("p", "还没有添加产品图", "empty-skus"));
+  } else {
+    const list = node("ul", undefined, "sku-list");
+    for (const sku of items) {
+      const row = node("li"), label = node("div");
+      label.append(node("b", sku.name), node("small", sku.template));
+      row.append(label, state(sku.status));
+      if (sku.status === "failed" || sku.status === "skipped")
+        row.append(node("p", sku.message, "row-detail"));
+      list.append(row);
+    }
+    $("skuList").replaceChildren(list);
   }
+  $("saveProduct").disabled = productBusy || !items.length;
+  $("addSku").disabled = productBusy;
+  $("productName").readOnly = productBusy;
+  $("productDialog").querySelector(".close").disabled = productBusy;
+  $("productHint").textContent = detailTemplate || !items.length
+    ? "提交 SKU 后立即排队出图。"
+    : "保存前请配置详情页模板。";
+}
+async function openProduct(id) {
+  if (openingProduct || $("productDialog").open) return;
+  if (!authenticated) return login();
+  openingProduct = true;
+  try {
+    if (id) {
+      draft = await (await api("products/" + id)).json();
+      if (draft.saved_at) return refresh();
+    } else {
+      draft = null;
+    }
+    draftId = draft?.id || newId();
+    $("productName").value = draft?.name || "";
+    $("productTitle").textContent = draft ? "继续配置产品" : "新增产品";
+    $("productError").textContent = "";
+    skuList();
+    if (!$("productDialog").open) $("productDialog").showModal();
+  } catch (err) {
+    notice(err.message);
+  } finally {
+    openingProduct = false;
+  }
+}
+$("newProduct").onclick = () => openProduct();
+$("productDialog").addEventListener("cancel", (event) => {
+  if (productBusy || busy) event.preventDefault();
+});
+$("generate").addEventListener("cancel", (event) => {
+  if (busy) event.preventDefault();
+});
+$("productDialog").onclose = () => {
+  draft = null;
+  if (view === "products") refresh();
+};
+$("addSku").onclick = async () => {
+  if (!$("productName").reportValidity()) return;
+  if (!authenticated) return login();
+  productBusy = true;
+  $("productError").textContent = "";
+  skuList();
+  try {
+    await loadTemplates();
+    if (!draft)
+      draft = await (await api("products/" + draftId + "/draft",
+        jsonOptions("PUT", { name: $("productName").value }))).json();
+    if (draft.saved_at) throw Error("产品已保存，请刷新产品列表");
+    skuId = newId();
+    for (const id of Object.keys(assets)) clearImage(id);
+    $("skuName").value = "";
+    $("template").value = "random";
+    $("bColor").value = swatches[0]?.dataset.color || "#a4b6c9";
+    $("skuError").textContent = "";
+    auto = true;
+    sync();
+    $("generate").showModal();
+    $("skuName").focus();
+  } catch (err) {
+    $("productError").textContent = err.message;
+  } finally {
+    productBusy = false;
+    skuList();
+  }
+};
+$("productForm").onsubmit = async (event) => {
+  event.preventDefault();
+  if (!draft?.skus.length || productBusy) return;
+  if (!authenticated) return login();
+  productBusy = true;
+  $("productError").textContent = "";
+  skuList();
+  try {
+    await api("products/" + draft.id + "/save", jsonOptions("PUT", { name: $("productName").value }));
+    $("productDialog").close();
+    if (view !== "products") location.hash = "products";
+    notice("产品已保存");
+  } catch (err) {
+    $("productError").textContent = err.message;
+  } finally {
+    productBusy = false;
+    skuList();
+  }
+};
+async function refreshDraft() {
+  if (!draft || !$("productDialog").open || $("generate").open || productBusy) return;
+  const current = draft;
+  try {
+    const next = await (await api("products/" + current.id)).json();
+    if (draft === current && $("productDialog").open && !$("generate").open && !productBusy) {
+      draft = next;
+      skuList();
+    }
+  } catch {}
+}
+$("submit").onclick = async () => {
+  if (!$("skuName").reportValidity() || busy) return;
+  if (!authenticated) return login();
   busy = true;
   $("generate").inert = true;
+  $("skuError").textContent = "";
   scope();
   const form = new FormData();
-  const outputName = $("outputName").value.trim();
-  if (outputName) form.set("output_name", outputName);
-  if ($("template").value) form.set("template", $("template").value);
+  form.set("sku_name", $("skuName").value);
+  form.set("template", $("template").value);
   if (assets.art) form.set("a_image", assets.art.file);
   if (assets.pillow) form.set("pillow_image", assets.pillow.file);
   form.set("b_color", $("bColor").value);
   form.set("background_color", $("bgColor").value);
   try {
-    const data = await (await api("jobs", { method: "POST", body: form })).json();
-    for (const id of Object.keys(assets)) clearImage(id);
-    $("outputName").value = "";
-    sync();
-    location.hash = "queue";
-    notice("已提交 " + data.count + " 个样机任务");
+    draft = await (await api("products/" + draft.id + "/skus/" + skuId,
+      { method: "POST", body: form })).json();
+    $("generate").close();
+    skuList();
   } catch (err) {
-    notice(err.message);
-    if (!authenticated) login();
+    $("skuError").textContent = err.message;
   } finally {
     busy = false;
     $("generate").inert = false;
     scope();
   }
+};
+$("generate").onclose = () => {
+  for (const id of Object.keys(assets)) clearImage(id);
+  sync();
+  refreshDraft();
+};
+$("skuName").onkeydown = (event) => {
+  if (event.key === "Enter" && !$("submit").disabled) $("submit").click();
 };
 function date(value) {
   return new Date(value).toLocaleString("zh-CN", { hour12: false });
@@ -381,21 +528,111 @@ function state(value, log = false) {
     "state " + value,
   );
 }
+function syncSelection() {
+  const visible = [...document.querySelectorAll("[data-product-select]:not(:disabled)")];
+  for (const checkbox of visible) checkbox.checked = selected.has(checkbox.dataset.productSelect);
+  const header = $("selectPage");
+  if (header) {
+    const checked = visible.filter((checkbox) => checkbox.checked).length;
+    header.checked = !!checked && checked === visible.length;
+    header.indeterminate = checked > 0 && checked < visible.length;
+    header.disabled = !visible.length;
+  }
+  $("downloadSelected").disabled = !selected.size || batchBusy;
+  $("downloadSelected").textContent = selected.size ? `批量下载（${selected.size}）` : "批量下载";
+}
+function makeProducts(items) {
+  const wrap = node("div", undefined, "table-scroll");
+  const table = node("table", undefined, "product-table");
+  const head = table.createTHead().insertRow();
+  const all = node("input");
+  all.id = "selectPage";
+  all.type = "checkbox";
+  all.setAttribute("aria-label", "选择本页可下载产品");
+  all.onchange = () => {
+    for (const row of items.filter((item) => item.downloadable))
+      all.checked ? selected.add(row.id) : selected.delete(row.id);
+    syncSelection();
+  };
+  const checkHead = node("th", undefined, "check-cell");
+  checkHead.append(all);
+  head.append(checkHead);
+  for (const label of ["产品名", "SKU 进度", "状态", "创建时间", "操作"])
+    head.append(node("th", label));
+  const body = table.createTBody();
+  for (const row of items) {
+    const tr = body.insertRow();
+    const checkbox = node("input");
+    checkbox.type = "checkbox";
+    checkbox.disabled = !row.downloadable;
+    checkbox.dataset.productSelect = row.id;
+    checkbox.setAttribute("aria-label", "选择 " + row.name);
+    checkbox.onchange = () => {
+      checkbox.checked ? selected.add(row.id) : selected.delete(row.id);
+      syncSelection();
+    };
+    if (!row.downloadable) selected.delete(row.id);
+    const status = node("div");
+    status.append(state(row.status));
+    if (row.message) status.append(node("small", row.message, "row-detail"));
+    const action = node("button", row.status === "draft" ? "继续配置" : "下载 ZIP", "textbtn row-action");
+    action.disabled = row.status !== "draft" && !row.downloadable;
+    action.onclick = async () => {
+      if (row.status === "draft") return openProduct(row.id);
+      action.disabled = true;
+      try {
+        await downloadFile(await api("products/" + row.id + "/download"), row.name + ".zip");
+      } catch (err) {
+        notice(err.message);
+      } finally {
+        action.disabled = false;
+      }
+    };
+    for (const value of [checkbox, node("b", row.name), `${row.sku_done} / ${row.sku_count}`,
+      status, date(row.created_at), action]) tr.insertCell().append(value);
+    tr.cells[0].className = "check-cell";
+  }
+  wrap.append(table);
+  return wrap;
+}
+$("downloadSelected").onclick = async () => {
+  if (batchBusy || !selected.size) return;
+  batchBusy = true;
+  syncSelection();
+  try {
+    await downloadFile(await api("products/download", jsonOptions("POST", { ids: [...selected] })), "产品输出图.zip");
+  } catch (err) {
+    notice(err.message);
+  } finally {
+    batchBusy = false;
+    syncSelection();
+  }
+};
 function makeTable(items, log) {
   const wrap = node("div", undefined, "table-scroll"),
     table = node("table"),
     head = table.createTHead().insertRow(),
     body = table.createTBody();
   for (const title of log
-    ? ["日期", "级别", "样机名", "任务 ID", "日志"]
-    : ["任务 ID", "样机名", "状态", "提交日期"])
+    ? ["日期", "级别", "产品", "任务类型", "任务 ID", "日志"]
+    : ["产品", "任务", "模板", "状态", "提交时间"])
     head.append(node("th", title));
   for (const row of items) {
     const tr = body.insertRow(),
       id = node("span", log ? row.job_id || "—" : row.id, "mono");
+    const name = kinds[row.kind] + (row.sku_name ? " · " + row.sku_name : "");
+    const task = node("div");
+    task.append(node("b", name), id);
+    const status = node("div");
+    if (!log) {
+      status.append(state(row.status));
+      if (["failed", "skipped", "blocked"].includes(row.status))
+        status.append(node("small", row.detail, "row-detail"));
+    }
     const values = log
-      ? [date(row.at), state(row.level, true), row.template || "—", id, node("div", row.message, "log-message")]
-      : [id, row.template, state(row.status), date(row.created_at)];
+      ? [date(row.at), state(row.level, true), row.product_name || "—", kinds[row.kind] || "—",
+        id, node("div", row.message, "log-message")]
+      : [row.product_name || "—", task, row.template, status, date(row.created_at)];
     for (const value of values) {
       const cell = tr.insertCell();
       cell.append(value);
@@ -405,24 +642,37 @@ function makeTable(items, log) {
   wrap.append(table);
   return wrap;
 }
-async function original(row, kind) {
+async function downloadFile(response, fallbackName) {
+  const url = URL.createObjectURL(await response.blob());
+  const a = node("a");
+  a.href = url;
+  const disposition = response.headers.get("Content-Disposition") || "";
+  const encoded = disposition.match(/filename\*=utf-8''([^;]+)/i);
+  const quoted = disposition.match(/filename="([^"]+)"/i);
+  a.download = encoded ? decodeURIComponent(encoded[1]) : quoted?.[1] || fallbackName;
+  a.click();
+  setTimeout(() => URL.revokeObjectURL(url), 30000);
+}
+async function original(row, kind, slice = null) {
+  const seq = kind === "image" ? ++viewerSequence : null;
   try {
-    const response = await api("outputs/" + row.id + "/" + kind);
-    const url = URL.createObjectURL(await response.blob());
+    const query = slice ? "?slice_name=" + encodeURIComponent(slice) : "";
+    const response = await api("outputs/" + row.id + "/" + kind + query);
     if (kind !== "image") {
-      const a = node("a");
-      a.href = url;
-      const disposition = response.headers.get("Content-Disposition") || "";
-      const encoded = disposition.match(/filename\*=utf-8''([^;]+)/i);
-      const quoted = disposition.match(/filename="([^"]+)"/i);
-      a.download = encoded ? decodeURIComponent(encoded[1]) : quoted?.[1] || "样机.png";
-      a.click();
-      setTimeout(() => URL.revokeObjectURL(url), 30000);
+      await downloadFile(response, outputName(row));
     } else {
+      const image = await response.blob();
+      if (seq !== viewerSequence) return;
       if (viewerUrl) URL.revokeObjectURL(viewerUrl);
-      viewerUrl = url;
-      $("fullImage").src = url;
-      $("viewerTitle").textContent = outputName(row);
+      viewerUrl = URL.createObjectURL(image);
+      $("fullImage").src = viewerUrl;
+      $("viewerTitle").textContent = row.kind === "detail" ? (row.product_name || "详情页") : outputName(row);
+      $("slicePicker").hidden = !row.slices?.length;
+      if (row.slices?.length) {
+        $("sliceSelect").replaceChildren(...row.slices.map((name) => new Option(name, name)));
+        $("sliceSelect").value = slice || row.slices[0];
+        $("sliceSelect").onchange = () => original(row, kind, $("sliceSelect").value);
+      }
       if (!$("viewer").open) $("viewer").showModal();
     }
   } catch (err) {
@@ -430,6 +680,7 @@ async function original(row, kind) {
   }
 }
 $("viewer").onclose = () => {
+  viewerSequence++;
   if (viewerUrl) URL.revokeObjectURL(viewerUrl);
   viewerUrl = null;
   $("fullImage").removeAttribute("src");
@@ -448,7 +699,7 @@ function gallery(items, seq) {
     preview.append(img);
     preview.onclick = () => original(row, "image");
     const actions = node("div", undefined, "output-actions"),
-      download = node("button", "下载 PNG", "textbtn"),
+      download = node("button", row.kind === "detail" ? "下载切片 ZIP" : "下载 PNG", "textbtn"),
       remove = node("button", "删除", "textbtn danger");
     download.onclick = () => original(row, "download");
     remove.setAttribute("aria-label", "删除 " + name);
@@ -459,8 +710,11 @@ function gallery(items, seq) {
       subject.onclick = () => original(row, "transparent");
       actions.append(subject);
     }
+    remove.disabled = !row.can_delete;
+    if (remove.disabled) remove.title = "产品任务结束后可以删除";
     actions.append(remove);
-    card.append(preview, node("b", name), node("small", row.template + " · " + date(row.updated_at)), actions);
+    const context = [row.product_name, kinds[row.kind], row.template, date(row.updated_at)].filter(Boolean);
+    card.append(preview, node("b", name), node("small", context.join(" · ")), actions);
     grid.append(card);
     api("outputs/" + row.id + "/thumbnail")
       .then((r) => r.blob())
@@ -494,9 +748,9 @@ function releaseThumbs() {
   thumbUrls = [];
 }
 async function refresh() {
-  if (view === "generate") return;
   const seq = ++sequence;
   if (!authenticated) {
+    lastRecords = "";
     $("recordsBody").replaceChildren(node("p", "连接工作台后查看记录", "empty-list"));
     $("pager").hidden = true;
     $("recordCount").textContent = "";
@@ -506,14 +760,21 @@ async function refresh() {
     const endpoint = view === "queue" ? "jobs" : view;
     const data = await (await api(endpoint + "?offset=" + offset + "&limit=" + limit)).json();
     if (seq !== sequence) return;
+    if (view === "products") {
+      const current = JSON.stringify([offset, data]);
+      if (current === lastRecords) return;
+      lastRecords = current;
+    }
     releaseThumbs();
     $("recordCount").textContent = data.total + " 条";
     const result = data.items.length
       ? view === "outputs"
         ? gallery(data.items, seq)
-        : makeTable(data.items, view === "logs")
-      : node("p", view === "outputs" ? "任务完成后，输出图将显示在这里" : "暂无记录", "empty-list");
+        : view === "products" ? makeProducts(data.items) : makeTable(data.items, view === "logs")
+      : node("p", { products: "点击「新增产品」开始添加 SKU", outputs: "任务完成后，输出图将显示在这里" }[view]
+        || "暂无记录", "empty-list");
     $("recordsBody").replaceChildren(result);
+    syncSelection();
     $("pager").hidden = data.total <= limit;
     $("prev").disabled = offset === 0;
     $("next").disabled = offset + limit >= data.total;
@@ -521,6 +782,7 @@ async function refresh() {
       1 + Math.floor(offset / limit) + " / " + Math.max(1, Math.ceil(data.total / limit));
   } catch (err) {
     if (seq === sequence) {
+      lastRecords = "";
       $("recordsBody").replaceChildren(node("p", err.message, "empty-list"));
       $("pager").hidden = true;
     }
@@ -528,12 +790,13 @@ async function refresh() {
 }
 function route() {
   const hash = location.hash.slice(1);
-  view = Object.hasOwn(names, hash) ? hash : "generate";
+  view = Object.hasOwn(names, hash) ? hash : "products";
   offset = 0;
   sequence++;
+  lastRecords = "";
   releaseThumbs();
-  $("generate").hidden = view !== "generate";
-  $("records").hidden = view === "generate";
+  $("newProduct").hidden = view !== "products";
+  $("downloadSelected").hidden = view !== "products";
   $("crumb").textContent = names[view];
   $("pageTitle").textContent = names[view];
   $("recordTitle").textContent = titles[view] || "";
@@ -541,12 +804,10 @@ function route() {
     if (a.dataset.view === view) a.setAttribute("aria-current", "page");
     else a.removeAttribute("aria-current");
   }
-  if (view !== "generate") {
-    $("recordsBody").replaceChildren();
-    $("recordCount").textContent = "";
-    $("pager").hidden = true;
-    refresh();
-  } else if (authenticated) loadTemplates().catch((err) => notice(err.message));
+  $("recordsBody").replaceChildren();
+  $("recordCount").textContent = "";
+  $("pager").hidden = true;
+  refresh();
 }
 $("prev").onclick = () => {
   offset = Math.max(0, offset - limit);
@@ -571,7 +832,10 @@ if (token)
     .then(() => refresh())
     .catch((err) => notice(err.message));
 setInterval(() => {
-  if (authenticated && !document.hidden && (view === "queue" || view === "logs")) refresh();
+  if (authenticated && !document.hidden) {
+    if (view !== "outputs") refresh();
+    refreshDraft();
+  }
 }, 5000);
 setInterval(() => {
   if (authenticated) loadStorage();

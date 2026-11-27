@@ -12,8 +12,9 @@ from celery.exceptions import Retry
 from celery.signals import worker_init, worker_ready, worker_shutdown
 from PIL import Image
 
-from app import store
-from app.config import BROKER, DATA, PHOTOSHOP_RESTART_AFTER_TASKS, QUEUE, revision, templates
+from app import products, store
+from app.config import BROKER, DATA, PHOTOSHOP_RESTART_AFTER_TASKS, QUEUE, revision, template_files
+from 详情页生成 import generate as generate_detail_page
 from 贴样机 import render, transparent_path
 
 celery = Celery("mockup", broker=BROKER)
@@ -99,11 +100,38 @@ def restart_if_due(job_id):
     return True
 
 
+def make_thumbnail(source, target):
+    with Image.open(source) as im:
+        im.thumbnail((640, 640), Image.Resampling.LANCZOS)
+        im.save(target, "PNG")
+
+
+def run_detail(job, folder, source, settings):
+    if (folder / "slices").is_dir() and (folder / "thumb.png").is_file():
+        return "done", f"已导出 {len(list((folder / 'slices').glob('*.png')))} 张详情页切片"
+    images = [DATA / "outputs" / job_id / "render.png" for job_id in settings["source_ids"]]
+    if any(not image.is_file() for image in images):
+        raise FileNotFoundError("部分 SKU 样机合成图已丢失")
+    with store.database() as db:
+        store.event(db, job["id"], f"正在调用 Photoshop，按添加顺序填入 {len(images)} 张 SKU 样机图")
+    with TemporaryDirectory(dir=folder) as tmp:
+        work = Path(tmp)
+        used, slots, count = generate_detail_page(source, work / "slices", images,
+                                                  on_processed=lambda: save_count(processed_count() + 1))
+        make_thumbnail(work / "slices" / "001.png", work / "thumb.png")
+        (work / "thumb.png").replace(folder / "thumb.png")
+        (work / "slices").rename(folder / "slices")
+    return "done", f"已替换 {used}/{slots} 个智能对象，导出 {count} 张详情页切片"
+
+
 def run_job(job, folder):
-    source = templates().get(job["template"])
+    source = template_files().get(job["template"])
     if source is None or revision(source) != job["revision"]:
-        raise ValueError("样机在提交后被移动或修改，请重新提交")
+        raise ValueError("模板在提交后被移动或修改，请核对模板")
     settings = json.loads(job["settings"])
+    if job["kind"] == "detail":
+        return run_detail(job, folder, source, settings)
+    subject_only = job["kind"] == "subject"
     inputs = DATA / "inputs" / job["batch"]
     with TemporaryDirectory(dir=folder) as tmp:
         work = Path(tmp)
@@ -125,16 +153,18 @@ def run_job(job, folder):
                 store.event(db, job["id"], "正在调用 Photoshop，处理图层：" + "、".join(name for name, _ in pairs))
 
         skipped = render(source, output, pairs, colors=settings["colors"], skip_missing=True,
+                         export_mockup=not subject_only, export_subject=subject_only or not job["product_id"],
                          on_photoshop_start=log_photoshop_start,
                          on_processed=lambda: save_count(processed_count() + 1))
         if len(skipped) == len(pairs):
             return "skipped", "模板没有可处理的对应图层，已跳过：" + "、".join(skipped)
-        with Image.open(output) as im:
-            im.thumbnail((640, 640), Image.Resampling.LANCZOS)
-            im.save(work / "thumb.png", "PNG")
-        output.replace(folder / "render.png")
-        (work / "thumb.png").replace(folder / "thumb.png")
         subject = transparent_path(output)
+        make_thumbnail(subject if subject_only else output, work / "thumb.png")
+        (work / "thumb.png").replace(folder / "thumb.png")
+        if subject_only:
+            subject.replace(folder / "subject.png")
+            return "done", f"已生成「{settings['sku_name']}」的 800 × 800 透明图"
+        output.replace(folder / "render.png")
         has_subject = subject.is_file()
         if has_subject:
             subject.replace(folder / "subject.png")
@@ -142,7 +172,7 @@ def run_job(job, folder):
             (folder / "subject.png").unlink(missing_ok=True)
         processed = "、".join(name for name, _ in pairs if name not in skipped)
         detail = "已生成：" + processed
-        if not has_subject:
+        if not has_subject and not job["product_id"]:
             detail += "。模板缺少「主体」分组，仅生成合成图"
         if skipped:
             detail += "。未找到对应图层，已跳过：" + "、".join(skipped)
@@ -151,8 +181,10 @@ def run_job(job, folder):
 
 def release_inputs(batch):
     with store.database() as db:
-        active = db.execute("""SELECT 1 FROM jobs WHERE batch=? AND status IN ('pending','queued','running')
-                               LIMIT 1""", (batch,)).fetchone()
+        active = db.execute("""SELECT 1 FROM jobs j LEFT JOIN products p ON p.id=j.product_id
+                               WHERE j.batch=? AND (j.status IN ('blocked','pending','queued','running')
+                                   OR (p.id IS NOT NULL AND p.saved_at IS NULL)) LIMIT 1""",
+                            (batch,)).fetchone()
     if not active:
         folder = DATA / "inputs" / batch
         if folder.is_dir():
@@ -174,6 +206,13 @@ def require_job(job_id, hostname):
     return job
 
 
+def finish_job(job, status, message, level):
+    with store.database() as db:
+        store.transition(db, job["id"], status, message, level)
+        if job["product_id"]:
+            products.advance(db, job["product_id"])
+
+
 @celery.task(name="mockup.render", bind=True, max_retries=None)
 def generate(self, job_id):
     if UUID(job_id).hex != job_id:
@@ -188,7 +227,7 @@ def generate(self, job_id):
                 store.event(db, job_id, "Photoshop 正由其他任务使用，30 秒后重试", "warning")
             raise self.retry(countdown=30)
         job = store.get(job_id)
-        if job["status"] in {"done", "skipped", "failed"}:
+        if job["status"] in store.TERMINAL or job["status"] == "blocked":
             release_inputs(job["batch"])
             return
         render_started = False
@@ -198,7 +237,7 @@ def generate(self, job_id):
                     store.transition(db, job_id, "queued", "等待 Photoshop 重启，60 秒后重试", "warning")
                 raise self.retry(countdown=60)
             with store.database() as db:
-                store.transition(db, job_id, "running", "正在准备样机工作副本和图层素材")
+                store.transition(db, job_id, "running", "正在准备模板工作副本与素材")
             render_started = True
             folder = DATA / "outputs" / job_id
             folder.mkdir(exist_ok=True)
@@ -206,12 +245,10 @@ def generate(self, job_id):
         except Retry:
             raise
         except Exception as exc:
-            with store.database() as db:
-                store.transition(db, job_id, "failed", f"{type(exc).__name__}：{exc}", "error")
+            finish_job(job, "failed", f"{type(exc).__name__}：{exc}", "error")
             raise
         else:
-            with store.database() as db:
-                store.transition(db, job_id, status, message, "warning" if status == "skipped" else "info")
+            finish_job(job, status, message, "warning" if status == "skipped" else "info")
         finally:
             try:
                 if render_started:

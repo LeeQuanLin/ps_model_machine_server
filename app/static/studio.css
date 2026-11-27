@@ -232,14 +232,9 @@ h2 {
 h3 {
   font-size: 15px;
 }
-.template {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  color: var(--muted);
-  font-size: 13px;
-}
-.template select,
+.field input,
+.field select,
+#sliceSelect,
 .secondary,
 .pagination button {
   border: 1px solid #cdd5d1;
@@ -247,10 +242,6 @@ h3 {
   padding: 9px 12px;
   background: #fff;
   color: var(--ink);
-}
-.template select {
-  min-width: 145px;
-  max-width: 240px;
 }
 .workspace {
   display: grid;
@@ -266,7 +257,6 @@ h3 {
   box-shadow: 0 2px 4px #20332907;
 }
 .panel-head,
-.submit-row,
 .dialog-head {
   display: flex;
   align-items: center;
@@ -334,18 +324,6 @@ h3 {
 .file.dragging {
   outline: 2px solid var(--primary);
   outline-offset: 2px;
-}
-.output-name {
-  display: grid;
-  gap: 6px;
-  padding: 0 18px 16px;
-  font-size: 13px;
-}
-.output-name input {
-  min-width: 0;
-  padding: 9px 12px;
-  border: 1px solid #cdd5d1;
-  border-radius: 6px;
 }
 .file span:nth-child(2) {
   overflow: hidden;
@@ -490,10 +468,6 @@ h3 {
   overflow: hidden;
   text-overflow: ellipsis;
 }
-.submit-row {
-  border-top: 1px solid var(--line);
-  padding: 15px 18px;
-}
 .primary,
 .secondary {
   display: inline-flex;
@@ -552,6 +526,56 @@ th {
     Consolas,
     monospace;
 }
+td .mono {
+  display: block;
+  margin-top: 5px;
+  color: var(--muted);
+}
+.actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.actions button,
+.row-action {
+  white-space: nowrap;
+}
+.product-table {
+  min-width: 630px;
+}
+.product-table td:nth-child(2) {
+  min-width: 145px;
+  overflow-wrap: anywhere;
+}
+.product-table td:nth-child(5) {
+  white-space: nowrap;
+}
+.product-table tbody tr:hover {
+  background-color: #f8faf7;
+}
+.check-cell {
+  width: 46px;
+  padding-right: 6px;
+}
+.check-cell input {
+  margin: 0;
+  width: 16px;
+  height: 16px;
+  accent-color: var(--primary);
+  vertical-align: middle;
+}
+.row-action {
+  padding: 6px 0;
+  font-weight: 600;
+}
+.row-detail {
+  display: block;
+  max-width: 34ch;
+  margin-top: 4px;
+  color: var(--muted);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
 .state {
   display: inline-block;
   border-radius: 20px;
@@ -562,7 +586,10 @@ th {
   white-space: nowrap;
 }
 .state.running,
-.state.queued {
+.state.queued,
+.state.mockups,
+.state.subject,
+.state.detail {
   background: #e8effb;
   color: #375a89;
 }
@@ -629,6 +656,7 @@ th {
 }
 .output-actions {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   gap: 14px;
   margin: 8px 12px 0;
@@ -668,6 +696,96 @@ dialog::backdrop {
 .dialog-head {
   margin-bottom: 18px;
 }
+.dialog-foot,
+.product-skus-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+.dialog-foot {
+  padding-top: 15px;
+  border-top: 1px solid var(--line);
+}
+.dialog-foot button {
+  flex-shrink: 0;
+}
+.field {
+  display: grid;
+  gap: 7px;
+  min-width: 0;
+  font-size: 13px;
+}
+.field :is(input, select) {
+  width: 100%;
+}
+#productDialog {
+  width: 620px;
+}
+#generate {
+  width: 960px;
+  background: #f9faf8;
+}
+.sku-fields {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 14px;
+  margin-bottom: 14px;
+}
+#generate .sample {
+  max-height: 195px;
+}
+.product-skus-head {
+  margin-block: 23px 8px;
+}
+#skuCount {
+  margin-left: 5px;
+  font-weight: normal;
+}
+.sku-list {
+  padding: 0;
+  margin: 0;
+  list-style: none;
+  max-height: 42vh;
+  overflow: auto;
+}
+.sku-list li {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 3px 12px;
+  padding: 10px 2px;
+  border-bottom: 1px solid var(--line);
+}
+.sku-list li > div {
+  display: grid;
+  gap: 3px;
+  font-size: 13px;
+  overflow-wrap: anywhere;
+}
+.sku-list li small {
+  color: var(--muted);
+}
+.sku-list .row-detail {
+  grid-column: 1 / -1;
+  max-width: none;
+  font-size: 12px;
+}
+.empty-skus {
+  padding: 22px 12px;
+  text-align: center;
+  color: var(--muted);
+  border: 1px dashed var(--line);
+  border-radius: 6px;
+  font-size: 13px;
+}
+.form-error {
+  min-height: 14px;
+  margin-block: 6px;
+  color: #974736;
+  font-size: 13px;
+  overflow-wrap: anywhere;
+}
 .close {
   background: transparent;
   border: 0;
@@ -697,6 +815,11 @@ dialog::backdrop {
 }
 #viewer {
   max-height: 94vh;
+}
+#slicePicker {
+  margin-left: auto;
+  white-space: nowrap;
+  font-size: 13px;
 }
 #fullImage {
   display: block;
@@ -811,14 +934,9 @@ dialog::backdrop {
   .sample {
     aspect-ratio: 1.5;
   }
-  .template {
-    font-size: 0;
-    gap: 0;
-  }
-  .template select {
-    min-width: 100px;
-    max-width: 160px;
-    font-size: 13px;
+  #generate,
+  #productDialog {
+    padding: 16px;
   }
   #notice {
     left: 50%;
@@ -832,5 +950,16 @@ dialog::backdrop {
   .swatch {
     width: 20px;
     height: 20px;
+  }
+}
+@media (max-width: 420px) {
+  .heading .actions {
+    gap: 5px;
+  }
+  .heading .actions button {
+    padding-inline: 8px;
+  }
+  .heading .actions svg {
+    display: none;
   }
 }

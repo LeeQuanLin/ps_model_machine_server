@@ -1,0 +1,152 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <title>样机工作台</title>
+    <link rel="stylesheet" href="/static/studio.css" />
+    <script src="/static/studio.js" defer></script>
+  </head>
+  <body>
+    <aside class="rail">
+      <a class="brand" href="#generate"><span class="mark" aria-hidden="true">▱</span> 样机工作台</a>
+      <nav aria-label="主导航">
+        <a href="#generate" data-view="generate"><span class="icon" data-icon="layers"></span>生成样机</a>
+        <a href="#queue" data-view="queue"><span class="icon" data-icon="queue"></span>任务队列</a>
+        <a href="#logs" data-view="logs"><span class="icon" data-icon="logs"></span>运行日志</a>
+        <a href="#outputs" data-view="outputs"><span class="icon" data-icon="gallery"></span>输出图</a>
+      </nav>
+      <div class="rail-footer">
+        <section class="storage" id="storage" aria-label="磁盘空间">
+          <p><span>磁盘空间 <small id="diskDrive"></small></span><b id="diskTotal">—</b></p>
+          <div class="storage-bar" id="storageBar" role="progressbar" aria-label="可用空间" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0"><i id="diskFreeBar"></i></div>
+          <p class="storage-foot"><span>可用 <b id="diskFree">—</b></span><span title="项目数据目录（data/studio）占用">已占用 <b id="projectUsed">—</b></span></p>
+        </section>
+        <button class="access" id="access"><i></i><span id="accessLabel">连接工作台</span></button>
+      </div>
+    </aside>
+    <main>
+      <header class="top">
+        <span>工作空间 <span class="slash">/</span> <strong id="crumb">生成样机</strong></span
+        ><span class="clock" id="today"></span>
+      </header>
+      <section id="generate">
+        <div class="heading">
+          <h1>生成样机</h1>
+          <label class="template"
+            >样机模板<select id="template">
+              <option value="">全部样机</option>
+              <option value="random">随机选择</option>
+              <option value="sequential">顺序选择</option>
+              <optgroup id="templateFiles" label="指定样机"></optgroup>
+            </select></label
+          >
+        </div>
+        <div class="workspace">
+          <section class="panel controls">
+            <div class="panel-head"><h2>图层设置</h2></div>
+            <div class="control">
+              <div class="label">
+                <span class="glyph">A</span>
+                <h3>A 面</h3>
+                <small>图案</small>
+              </div>
+              <label class="file" for="art"
+                ><span data-icon="upload"></span><span id="artName">点击或拖入 A 面图片</span
+                ><input id="art" type="file" accept="image/png,image/jpeg" /></label
+              ><button id="clearArt" class="textbtn" hidden>移除图片</button>
+            </div>
+            <div class="control">
+              <div class="label">
+                <span class="glyph">B</span>
+                <h3>B 面</h3>
+                <small>纯色</small>
+              </div>
+              <div id="swatches" class="swatches" aria-label="B 面预设颜色"><!-- B_SIDE_SWATCHES --></div>
+              <label class="picker"
+                ><input type="color" id="bColor" /><span id="bHex"></span
+                ><span class="muted">自选颜色</span></label
+              >
+            </div>
+            <div class="control">
+              <div class="label">
+                <span class="glyph" data-icon="pillow"></span>
+                <h3>枕套</h3>
+                <small>图案</small>
+              </div>
+              <label class="file" for="pillow"
+                ><span data-icon="upload"></span><span id="pillowName">点击或拖入枕套图片</span
+                ><input id="pillow" type="file" accept="image/png,image/jpeg" /></label
+              ><button id="clearPillow" class="textbtn" hidden>移除图片</button>
+            </div>
+            <div class="control">
+              <div class="label">
+                <span class="glyph" data-icon="background"></span>
+                <h3>背景</h3>
+                <small>纯色</small>
+              </div>
+              <div class="switch" aria-label="背景配色方式">
+                <button id="autoColor" aria-pressed="true">取 A 面主题色</button
+                ><button id="manualColor" aria-pressed="false">手动选色</button>
+              </div>
+              <label class="picker"
+                ><input type="color" id="bgColor" value="#eeeae3" /><span id="bgHex"></span
+                ><span class="muted" id="bgHint"></span
+              ></label>
+            </div>
+          </section>
+          <section class="panel previews">
+            <div class="panel-head">
+              <h2>平铺预览</h2>
+              <span class="fine">4 个图层</span>
+            </div>
+            <div class="tiles" id="tiles"></div>
+            <label class="output-name">
+              输出文件名
+              <input id="outputName" type="text" placeholder="选填，默认使用样机名和任务 ID" />
+            </label>
+            <footer class="submit-row">
+              <span class="fine" id="scope"></span
+              ><button class="primary" id="submit"><span data-icon="play"></span>提交到任务队列</button>
+            </footer>
+          </section>
+        </div>
+      </section>
+      <section id="records" hidden>
+        <div class="heading">
+          <h1 id="pageTitle"></h1>
+          <button class="secondary" id="refresh"><span data-icon="refresh"></span>刷新</button>
+        </div>
+        <div class="panel record-panel">
+          <div class="panel-head">
+            <h2 id="recordTitle"></h2>
+            <span class="fine" id="recordCount"></span>
+          </div>
+          <div id="recordsBody"></div>
+          <div class="pagination" id="pager" hidden>
+            <button id="prev">上一页</button><span id="pageNumber"></span><button id="next">下一页</button>
+          </div>
+        </div>
+      </section>
+      <p id="notice" role="status" aria-live="polite" hidden></p>
+    </main>
+    <dialog id="login">
+      <form id="loginForm">
+        <div class="dialog-head">
+          <h2>连接工作台</h2>
+          <button class="close" type="button" aria-label="关闭">×</button>
+        </div>
+        <label>访问令牌<input type="password" id="token" autocomplete="current-password" required /></label>
+        <p id="loginError" role="alert"></p>
+        <button class="primary">连接</button>
+      </form>
+    </dialog>
+    <dialog id="viewer">
+      <div class="dialog-head">
+        <h2 id="viewerTitle"></h2>
+        <button class="close" aria-label="关闭">×</button>
+      </div>
+      <img id="fullImage" alt="样机原尺寸输出图" />
+    </dialog>
+  </body>
+</html>

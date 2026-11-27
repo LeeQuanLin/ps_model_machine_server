@@ -1,0 +1,167 @@
+import tempfile
+import unittest
+from contextlib import ExitStack
+from io import BytesIO
+from pathlib import Path
+from unittest.mock import patch
+from uuid import UUID, uuid4
+from zipfile import ZipFile
+
+from fastapi import HTTPException, UploadFile
+from PIL import Image
+
+from app import main, products, store, worker
+
+
+class ProductWorkflowTest(unittest.TestCase):
+    def setUp(self):
+        stack = ExitStack()
+        self.addCleanup(stack.close)
+        root = Path(stack.enter_context(tempfile.TemporaryDirectory()))
+        self.data = root / "studio"
+        for module in (main, store, worker):
+            stack.enter_context(patch.object(module, "DATA", self.data))
+        templates = root / "templates"
+        templates.mkdir()
+        self.psd = templates / "样机.psd"
+        self.psb = templates / "详情.psb"
+        for template in (self.psd, self.psb):
+            template.write_bytes(b"test fixture")
+        stack.enter_context(patch.object(products, "TEMPLATES", templates))
+        stack.enter_context(patch.object(main, "templates", return_value={self.psd.name: self.psd}))
+        stack.enter_context(patch.object(main, "detail_template", return_value=self.psb))
+        stack.enter_context(patch.object(worker, "template_files",
+                                         return_value={self.psd.name: self.psd, self.psb.name: self.psb}))
+        self.render_modes = []
+        self.detail_inputs = []
+        stack.enter_context(patch.object(worker, "render", side_effect=self.render_mockup))
+        stack.enter_context(patch.object(worker, "generate_detail_page", side_effect=self.render_detail))
+        self.product_id = uuid4()
+        self.form = main.ProductForm(name="新品")
+        store.initialize()
+        main.create_product(self.product_id, self.form)
+
+    def render_mockup(self, template, output, pairs, *, export_mockup, export_subject, **kwargs):
+        self.render_modes.append((export_mockup, export_subject))
+        self.assertTrue(dict(pairs)["A面"].is_file())
+        if export_mockup:
+            Image.new("RGB", (80, 80)).save(output)
+        if export_subject:
+            Image.new("RGBA", (800, 800)).save(worker.transparent_path(output))
+        return []
+
+    def render_detail(self, template, output, images, **kwargs):
+        self.detail_inputs = [image.parent.name for image in images]
+        output.mkdir()
+        for index, height in enumerate((960, 100), 1):
+            Image.new("RGB", (80, height)).save(output / f"{index:03d}.png")
+        return len(images), 6, 2
+
+    def add_sku(self, name, sku_id=None, *, template="random"):
+        sku_id = sku_id or uuid4()
+        source = BytesIO()
+        Image.new("RGB", (8, 8)).save(source, "PNG")
+        source.seek(0)
+        result = main.submit_sku(self.product_id, sku_id, name, template, "#ffffff", "#eeeeee",
+                                 a_image=UploadFile(source))
+        self.assertTrue(any(sku["id"] == sku_id.hex for sku in result["skus"]))
+        return sku_id.hex
+
+    def run_job(self, job_id):
+        return worker.generate.run(job_id)
+
+    def jobs(self):
+        with store.database() as db:
+            return products.product_jobs(db, self.product_id.hex)
+
+    def archive(self, response):
+        try:
+            with ZipFile(response.path) as archive:
+                self.assertIsNone(archive.testzip())
+                return archive.namelist()
+        finally:
+            response.path.unlink()
+
+    def test_draft_runs_skus_and_save_triggers_one_subject_then_ordered_detail(self):
+        first = self.add_sku("SKU-B", template="sequential")
+        second = self.add_sku("SKU-A")
+        self.add_sku("SKU-A", UUID(second))
+        with self.assertRaises(HTTPException) as duplicate:
+            self.add_sku("sku-a")
+        self.assertEqual(duplicate.exception.status_code, 409)
+        self.assertEqual(store.next_delivery(), first)
+        self.run_job(first)
+        first_input = self.data / "inputs" / store.get(first)["batch"]
+        second_input = self.data / "inputs" / store.get(second)["batch"]
+        self.assertTrue(first_input.is_dir())
+        self.assertEqual(main.get_product(self.product_id)["status"], "draft")
+        with self.assertRaises(HTTPException) as live_output:
+            main.delete_output(UUID(first))
+        self.assertEqual(live_output.exception.status_code, 409)
+
+        with patch.object(products.secrets, "choice", side_effect=lambda rows: rows[-1]):
+            self.assertEqual(main.save_product(self.product_id, self.form)["status"], "mockups")
+        main.save_product(self.product_id, self.form)
+        _, _, subject, detail = self.jobs()
+        self.assertFalse(first_input.exists())
+        self.assertTrue(second_input.is_dir())
+        self.assertEqual((subject["status"], detail["status"]), ("blocked", "blocked"))
+
+        self.run_job(second)
+        store.initialize()
+        self.assertEqual(store.get(subject["id"])["status"], "pending")
+        self.assertEqual(store.get(detail["id"])["status"], "blocked")
+        self.run_job(subject["id"])
+        self.assertFalse(second_input.exists())
+        self.assertEqual(store.get(detail["id"])["status"], "pending")
+        self.run_job(detail["id"])
+        self.assertEqual(self.render_modes, [(True, False), (True, False), (False, True)])
+        self.assertEqual(self.detail_inputs, [first, second])
+        self.assertTrue(main.get_product(self.product_id)["downloadable"])
+        self.assertEqual(main.output_image(UUID(detail["id"]), "image", "002.png").path.name, "002.png")
+
+        contents = [
+            "新品/样机图/SKU-B.png", "新品/样机图/SKU-A.png", "新品/透明图/SKU-A-透明图.png",
+            "新品/详情页/001.png", "新品/详情页/002.png",
+        ]
+        self.assertEqual(self.archive(main.download_product(self.product_id)), contents)
+        second_product = uuid4()
+        main.create_product(second_product, self.form)
+        original_product = self.product_id
+        self.product_id = second_product
+        self.run_job(self.add_sku("SKU-C"))
+        main.save_product(second_product, self.form)
+        _, subject, detail = self.jobs()
+        self.run_job(subject["id"])
+        self.run_job(detail["id"])
+        selection = main.ProductSelection(ids=[original_product, second_product, original_product])
+        self.assertEqual(self.archive(main.download_products(selection)), contents + [
+            "新品 (2)/样机图/SKU-C.png", "新品 (2)/透明图/SKU-C-透明图.png",
+            "新品 (2)/详情页/001.png", "新品 (2)/详情页/002.png",
+        ])
+        main.delete_output(UUID(first))
+        self.assertEqual(main.get_product(original_product)["status"], "removed")
+        with self.assertRaises(HTTPException):
+            main.download_product(original_product)
+
+    def test_failed_sku_cannot_release_detail_job(self):
+        first = self.add_sku("失败款")
+        second = self.add_sku("成功款")
+        with patch.object(products.secrets, "choice", side_effect=lambda rows: rows[-1]):
+            main.save_product(self.product_id, self.form)
+        _, _, subject, detail = self.jobs()
+        with patch.object(worker, "render", side_effect=RuntimeError("模板异常")):
+            with self.assertRaisesRegex(RuntimeError, "模板异常"):
+                self.run_job(first)
+        self.assertEqual(store.get(detail["id"])["status"], "blocked")
+        self.run_job(second)
+        self.run_job(subject["id"])
+        self.assertEqual(store.get(detail["id"])["status"], "skipped")
+        summary = main.get_product(self.product_id)
+        self.assertEqual(summary["status"], "failed")
+        self.assertIn("模板异常", summary["message"])
+        self.assertFalse(summary["downloadable"])
+
+
+if __name__ == "__main__":
+    unittest.main()

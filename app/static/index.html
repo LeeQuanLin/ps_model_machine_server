@@ -4,17 +4,17 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width,initial-scale=1" />
     <title>样机工作台</title>
-    <link rel="stylesheet" href="/static/studio.css" />
-    <script src="/static/studio.js" defer></script>
+    <link rel="stylesheet" href="/static/studio.css?v=2" />
+    <script src="/static/studio.js?v=2" defer></script>
   </head>
   <body>
     <aside class="rail">
-      <a class="brand" href="#generate"><span class="mark" aria-hidden="true">▱</span> 样机工作台</a>
+      <a class="brand" href="#products"><span class="mark" aria-hidden="true">▱</span> 样机工作台</a>
       <nav aria-label="主导航">
-        <a href="#generate" data-view="generate"><span class="icon" data-icon="layers"></span>生成样机</a>
+        <a href="#products" data-view="products"><span class="icon" data-icon="layers"></span>产品列表</a>
         <a href="#queue" data-view="queue"><span class="icon" data-icon="queue"></span>任务队列</a>
-        <a href="#logs" data-view="logs"><span class="icon" data-icon="logs"></span>运行日志</a>
-        <a href="#outputs" data-view="outputs"><span class="icon" data-icon="gallery"></span>输出图</a>
+        <a href="#logs" data-view="logs"><span class="icon" data-icon="logs"></span>日志</a>
+        <a href="#outputs" data-view="outputs"><span class="icon" data-icon="gallery"></span>输出图管理</a>
       </nav>
       <div class="rail-footer">
         <section class="storage" id="storage" aria-label="磁盘空间">
@@ -27,15 +27,65 @@
     </aside>
     <main>
       <header class="top">
-        <span>工作空间 <span class="slash">/</span> <strong id="crumb">生成样机</strong></span
+        <span>工作空间 <span class="slash">/</span> <strong id="crumb">产品列表</strong></span
         ><span class="clock" id="today"></span>
       </header>
-      <section id="generate">
+      <section id="records">
         <div class="heading">
-          <h1>生成样机</h1>
-          <label class="template"
-            >样机模板<select id="template">
-              <option value="">全部样机</option>
+          <h1 id="pageTitle">产品列表</h1>
+          <div class="actions">
+            <button class="secondary" id="refresh"><span data-icon="refresh"></span>刷新</button>
+            <button class="primary" id="newProduct"><span data-icon="plus"></span>新增产品</button>
+          </div>
+        </div>
+        <div class="panel record-panel">
+          <div class="panel-head">
+            <div class="actions">
+              <h2 id="recordTitle"></h2>
+              <span class="fine" id="recordCount"></span>
+            </div>
+            <button class="secondary" id="downloadSelected" disabled>批量下载</button>
+          </div>
+          <div id="recordsBody"></div>
+          <div class="pagination" id="pager" hidden>
+            <button id="prev">上一页</button><span id="pageNumber"></span><button id="next">下一页</button>
+          </div>
+        </div>
+      </section>
+      <p id="notice" role="status" aria-live="polite" hidden></p>
+    </main>
+    <dialog id="productDialog" aria-labelledby="productTitle">
+      <form id="productForm">
+        <div class="dialog-head">
+          <h2 id="productTitle">新增产品</h2>
+          <button class="close" type="button" aria-label="关闭">×</button>
+        </div>
+        <label class="field">产品名
+          <input id="productName" placeholder="输入产品名" maxlength="200" required />
+        </label>
+        <div class="product-skus-head">
+          <h3>SKU 列表 <span class="fine" id="skuCount"></span></h3>
+          <button class="secondary" type="button" id="addSku"><span data-icon="plus"></span>添加产品图</button>
+        </div>
+        <div id="skuList"></div>
+        <p id="productError" class="form-error" role="alert"></p>
+        <div class="dialog-foot">
+          <span class="fine" id="productHint">提交 SKU 后立即排队出图。</span>
+          <button class="primary" id="saveProduct" disabled>保存产品</button>
+        </div>
+      </form>
+    </dialog>
+    <dialog id="generate" aria-labelledby="generateTitle">
+        <div class="dialog-head">
+          <h2 id="generateTitle">添加产品图</h2>
+          <button type="button" class="close" aria-label="关闭">×</button>
+        </div>
+        <div class="sku-fields">
+          <label class="field">SKU 名
+            <input id="skuName" type="text" placeholder="输入 SKU 名" maxlength="200" required />
+          </label>
+          <label class="field"
+            >样机模板<select id="template" required>
               <option value="random">随机选择</option>
               <option value="sequential">顺序选择</option>
               <optgroup id="templateFiles" label="指定样机"></optgroup>
@@ -101,35 +151,14 @@
               <span class="fine">4 个图层</span>
             </div>
             <div class="tiles" id="tiles"></div>
-            <label class="output-name">
-              输出文件名
-              <input id="outputName" type="text" placeholder="选填，默认使用样机名和任务 ID" />
-            </label>
-            <footer class="submit-row">
-              <span class="fine" id="scope"></span
-              ><button class="primary" id="submit"><span data-icon="play"></span>提交到任务队列</button>
-            </footer>
           </section>
         </div>
-      </section>
-      <section id="records" hidden>
-        <div class="heading">
-          <h1 id="pageTitle"></h1>
-          <button class="secondary" id="refresh"><span data-icon="refresh"></span>刷新</button>
-        </div>
-        <div class="panel record-panel">
-          <div class="panel-head">
-            <h2 id="recordTitle"></h2>
-            <span class="fine" id="recordCount"></span>
-          </div>
-          <div id="recordsBody"></div>
-          <div class="pagination" id="pager" hidden>
-            <button id="prev">上一页</button><span id="pageNumber"></span><button id="next">下一页</button>
-          </div>
-        </div>
-      </section>
-      <p id="notice" role="status" aria-live="polite" hidden></p>
-    </main>
+        <p id="skuError" class="form-error" role="alert"></p>
+        <footer class="dialog-foot">
+          <span class="fine" id="scope"></span>
+          <button class="primary" id="submit"><span data-icon="play"></span>提交并开始出图</button>
+        </footer>
+    </dialog>
     <dialog id="login">
       <form id="loginForm">
         <div class="dialog-head">
@@ -144,9 +173,10 @@
     <dialog id="viewer">
       <div class="dialog-head">
         <h2 id="viewerTitle"></h2>
+        <label id="slicePicker" hidden>切片 <select id="sliceSelect"></select></label>
         <button class="close" aria-label="关闭">×</button>
       </div>
-      <img id="fullImage" alt="样机原尺寸输出图" />
+      <img id="fullImage" alt="原尺寸输出图" />
     </dialog>
   </body>
 </html>
