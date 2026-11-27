@@ -1,4 +1,4 @@
-"""把一组图片贴到 PSD / PSB 样机的智能对象，导出合成 PNG。"""
+"""把图片贴到 PSD / PSB 样机，导出合成 PNG 和 800×800 的主体透明图。"""
 
 import argparse
 import json
@@ -6,6 +6,7 @@ import os
 from pathlib import Path
 import shutil
 import subprocess
+import sys
 import tempfile
 
 
@@ -14,6 +15,7 @@ RENDER_SCRIPT = r"""
 (function () {
     var original = app.documents.length ? app.activeDocument : null;
     var dialogs = app.displayDialogs;
+    var rulerUnits = app.preferences.rulerUnits;
     var work = null, art = null, child = null;
     var stage = "打开样机";
 
@@ -87,6 +89,57 @@ RENDER_SCRIPT = r"""
 
     function close(doc) {
         if (doc) doc.close(SaveOptions.DONOTSAVECHANGES);
+    }
+
+    function findSubject(groups, path, matches) {
+        for (var i = 0; i < groups.length; i++) {
+            var group = groups[i], branch = path.concat([group]);
+            if (group.name === "主体") matches.push(branch);
+            findSubject(group.layerSets, branch, matches);
+        }
+    }
+
+    function isolateSubject(doc, branch) {
+        var parent = doc;
+        for (var i = 0; i < branch.length; i++) {
+            var group = branch[i];
+            group.visible = true;
+            for (var j = 0; j < parent.layers.length; j++) {
+                var sibling = parent.layers[j];
+                if (sibling.id !== group.id && sibling.visible) sibling.visible = false;
+            }
+            parent = group;
+        }
+    }
+
+    function squareCrop(doc) {
+        var width = doc.width.as("px"), height = doc.height.as("px");
+        var size = new UnitValue(800, "px");
+        doc.resizeImage(width <= height ? size : undefined, height < width ? size : undefined,
+                        undefined, ResampleMethod.BICUBIC);
+        var left = Math.floor((Math.round(doc.width.as("px")) - 800) / 2);
+        var top = Math.floor((Math.round(doc.height.as("px")) - 800) / 2);
+        doc.crop([new UnitValue(left, "px"), new UnitValue(top, "px"),
+                  new UnitValue(left + 800, "px"), new UnitValue(top + 800, "px")]);
+    }
+
+    function savePng(doc, path) {
+        // Mode and bit-depth conversions may flatten layers. Convert a disposable copy.
+        var convert = doc.mode !== DocumentMode.RGB && doc.mode !== DocumentMode.GRAYSCALE &&
+                      doc.mode !== DocumentMode.INDEXEDCOLOR;
+        var copy = null;
+        try {
+            if (convert || doc.bitsPerChannel === BitsPerChannelType.THIRTYTWO) {
+                copy = doc.duplicate("PNG export", true);
+                doc = copy;
+                if (convert) doc.changeMode(ChangeMode.RGB);
+                if (doc.bitsPerChannel === BitsPerChannelType.THIRTYTWO)
+                    doc.bitsPerChannel = BitsPerChannelType.SIXTEEN;
+            }
+            doc.saveAs(new File(path), new PNGSaveOptions(), true, Extension.LOWERCASE);
+        } finally {
+            close(copy);
+        }
     }
 
     function openInput(path) {
@@ -191,6 +244,7 @@ RENDER_SCRIPT = r"""
 
     try {
         app.displayDialogs = DialogModes.NO;
+        app.preferences.rulerUnits = Units.PIXELS;
         work = openInput(job.template);
         var objects = [], targets = [], assigned = {}, skipped = [];
         collect(work.layers, "", objects);
@@ -219,14 +273,16 @@ RENDER_SCRIPT = r"""
         if (!targets.length) return "SKIP";
         stage = "导出 PNG";
         app.activeDocument = work;
-        if (work.mode !== DocumentMode.RGB && work.mode !== DocumentMode.GRAYSCALE &&
-            work.mode !== DocumentMode.INDEXEDCOLOR) {
-            work.mergeVisibleLayers();
-            work.changeMode(ChangeMode.RGB);
-        }
-        if (work.bitsPerChannel === BitsPerChannelType.THIRTYTWO)
-            work.bitsPerChannel = BitsPerChannelType.SIXTEEN;
-        work.saveAs(new File(job.output), new PNGSaveOptions(), true, Extension.LOWERCASE);
+        savePng(work, job.output);
+        stage = "导出主体透明图";
+        var subjects = [];
+        findSubject(work.layerSets, [], subjects);
+        if (!subjects.length) return "NO_SUBJECT:" + skipped.join(",");
+        if (subjects.length > 1) throw Error("存在多个「主体」分组，无法确定透明图的主体");
+        app.activeDocument = work;
+        isolateSubject(work, subjects[0]);
+        squareCrop(work);
+        savePng(work, job.transparentOutput);
         return "OK:" + skipped.join(",");
     } catch (error) {
         return "ERROR " + stage + "：" + error.toString() + " (line " + error.line + ")";
@@ -235,10 +291,15 @@ RENDER_SCRIPT = r"""
         try { close(child); } catch (ignored) {}
         try { close(work); } catch (ignored) {}
         try { if (original) app.activeDocument = original; } catch (ignored) {}
+        app.preferences.rulerUnits = rulerUnits;
         app.displayDialogs = dialogs;
     }
 }());
 """
+
+
+def transparent_path(output):
+    return output.with_name(output.stem + "-透明图.png")
 
 
 def render(template, output, pairs, *, colors=None, skip_missing=False, on_processed=None,
@@ -249,6 +310,7 @@ def render(template, output, pairs, *, colors=None, skip_missing=False, on_proce
         template_copy = folder / ("template" + template.suffix.lower())
         shutil.copyfile(template, template_copy)
         staged = folder / "result.png"
+        staged_subject = folder / "subject.png"
         inputs = {}
         tasks = []
         for index, (name, image) in enumerate(pairs):
@@ -258,7 +320,8 @@ def render(template, output, pairs, *, colors=None, skip_missing=False, on_proce
             tasks.append({"name": name, "input": str(inputs[image]), "color": (colors or {}).get(name),
                           "replacement": str(folder / f"replacement{index}.psd")})
 
-        job = {"template": str(template_copy), "pairs": tasks, "output": str(staged), "skipMissing": skip_missing}
+        job = {"template": str(template_copy), "pairs": tasks, "output": str(staged),
+               "transparentOutput": str(staged_subject), "skipMissing": skip_missing}
         script = folder / "render.jsx"
         script.write_text("#target photoshop\nvar job = " + json.dumps(job) + ";\n" + RENDER_SCRIPT,
                           encoding="utf-8-sig")
@@ -278,15 +341,26 @@ Write-Output $result
         )
         result = process.stdout.strip()
         # A JSX response confirms Photoshop actually processed this template.
-        if on_processed and (result == "SKIP" or result.startswith(("OK:", "ERROR "))):
+        if on_processed and (result == "SKIP" or result.startswith(("OK:", "NO_SUBJECT:", "ERROR "))):
             on_processed()
         if not process.returncode and result == "SKIP":
             return [name for name, _ in pairs]
-        if process.returncode or not result.startswith("OK:") or not staged.is_file():
+        status, _, indices = result.partition(":")
+        if process.returncode or not result.startswith(("OK:", "NO_SUBJECT:")) or not staged.is_file():
             raise RuntimeError(process.stderr.strip() or result or "Photoshop 未生成 PNG")
+        skipped = [pairs[int(index)][0] for index in indices.split(",") if index]
         # On Windows rename publishes a completed file and refuses an existing destination.
-        staged.rename(output)
-        return [pairs[int(index)][0] for index in result[3:].split(",") if index]
+        if status == "OK":
+            subject = transparent_path(output)
+            staged_subject.rename(subject)
+            try:
+                staged.rename(output)
+            except OSError:
+                subject.unlink()
+                raise
+        else:
+            staged.rename(output)
+        return skipped
 
 
 def main():
@@ -304,6 +378,8 @@ def main():
         parser.error(f"请指定已有的 PSD 或 PSB 样机：{template}")
     if output.suffix.lower() != ".png" or output.exists():
         parser.error(f"请指定新的 PNG 输出文件：{output}")
+    if transparent_path(output).exists():
+        parser.error(f"透明图输出文件已存在：{transparent_path(output)}")
     if not output.parent.is_dir():
         parser.error(f"输出目录不存在：{output.parent}")
     pairs = []
@@ -324,6 +400,10 @@ def main():
     except (OSError, RuntimeError) as error:
         parser.exit(1, f"生成失败：{error}\n")
     print(output)
+    if transparent_path(output).is_file():
+        print(transparent_path(output))
+    else:
+        print("模板缺少「主体」分组，仅生成合成图。", file=sys.stderr)
 
 
 if __name__ == "__main__":

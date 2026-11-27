@@ -405,11 +405,11 @@ function makeTable(items, log) {
   wrap.append(table);
   return wrap;
 }
-async function original(row, download) {
+async function original(row, kind) {
   try {
-    const response = await api("outputs/" + row.id + "/" + (download ? "download" : "image"));
+    const response = await api("outputs/" + row.id + "/" + kind);
     const url = URL.createObjectURL(await response.blob());
-    if (download) {
+    if (kind !== "image") {
       const a = node("a");
       a.href = url;
       const disposition = response.headers.get("Content-Disposition") || "";
@@ -446,14 +446,20 @@ function gallery(items, seq) {
       img = node("img");
     img.alt = name;
     preview.append(img);
-    preview.onclick = () => original(row, false);
+    preview.onclick = () => original(row, "image");
     const actions = node("div", undefined, "output-actions"),
       download = node("button", "下载 PNG", "textbtn"),
       remove = node("button", "删除", "textbtn danger");
-    download.onclick = () => original(row, true);
+    download.onclick = () => original(row, "download");
     remove.setAttribute("aria-label", "删除 " + name);
     remove.onclick = () => removeOutput(row, remove);
-    actions.append(download, remove);
+    actions.append(download);
+    if (row.has_transparent) {
+      const subject = node("button", "下载透明图", "textbtn");
+      subject.onclick = () => original(row, "transparent");
+      actions.append(subject);
+    }
+    actions.append(remove);
     card.append(preview, node("b", name), node("small", row.template + " · " + date(row.updated_at)), actions);
     grid.append(card);
     api("outputs/" + row.id + "/thumbnail")

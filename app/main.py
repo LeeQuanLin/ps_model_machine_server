@@ -171,7 +171,7 @@ def submit(
             raise HTTPException(404, "样机已移除，请刷新后重新选择")
         available = {template: available[template]}
     count = 1 if template == "sequential" else len(available)
-    longest_suffix = f"-{count:02d}.png" if count > 1 else ".png"
+    longest_suffix = f"-{count:02d}-透明图.png" if count > 1 else "-透明图.png"
     if len((name + longest_suffix).encode("utf-8")) > 255:
         raise HTTPException(422, "输出文件名过长，请缩短后再提交")
     batch = uuid4().hex
@@ -237,12 +237,18 @@ def delete_output(job_id: UUID):
 
 @app.get("/api/outputs/{job_id}/{kind}")
 def output_image(job_id: UUID, kind: str):
+    files = {"thumbnail": "thumb.png", "image": "render.png", "download": "render.png",
+             "transparent": "subject.png"}
     job = store.get(job_id.hex)
     if (not job or job["status"] != "done" or job.get("deleted_at")
-            or kind not in {"thumbnail", "image", "download"}):
+            or kind not in files):
         raise HTTPException(404, "找不到输出图")
-    path = DATA / "outputs" / job_id.hex / ("thumb.png" if kind == "thumbnail" else "render.png")
+    path = DATA / "outputs" / job_id.hex / files[kind]
     if not path.is_file():
         raise HTTPException(404, "输出文件已移除")
-    name = store.download_name(job)
-    return FileResponse(path, media_type="image/png", filename=name if kind == "download" else None)
+    name = None
+    if kind in {"download", "transparent"}:
+        name = store.download_name(job)
+        if kind == "transparent":
+            name = PureWindowsPath(name).stem + "-透明图.png"
+    return FileResponse(path, media_type="image/png", filename=name)

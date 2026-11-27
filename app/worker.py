@@ -14,7 +14,7 @@ from PIL import Image
 
 from app import store
 from app.config import BROKER, DATA, PHOTOSHOP_RESTART_AFTER_TASKS, QUEUE, revision, templates
-from 贴样机 import render
+from 贴样机 import render, transparent_path
 
 celery = Celery("mockup", broker=BROKER)
 celery.conf.update(task_default_queue=QUEUE, task_ignore_result=True, worker_prefetch_multiplier=1,
@@ -134,8 +134,16 @@ def run_job(job, folder):
             im.save(work / "thumb.png", "PNG")
         output.replace(folder / "render.png")
         (work / "thumb.png").replace(folder / "thumb.png")
+        subject = transparent_path(output)
+        has_subject = subject.is_file()
+        if has_subject:
+            subject.replace(folder / "subject.png")
+        else:
+            (folder / "subject.png").unlink(missing_ok=True)
         processed = "、".join(name for name, _ in pairs if name not in skipped)
         detail = "已生成：" + processed
+        if not has_subject:
+            detail += "。模板缺少「主体」分组，仅生成合成图"
         if skipped:
             detail += "。未找到对应图层，已跳过：" + "、".join(skipped)
         return "done", detail

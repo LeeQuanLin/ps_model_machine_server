@@ -3,6 +3,7 @@ import tempfile
 import unittest
 from pathlib import Path
 from unittest import mock
+from urllib.parse import unquote
 from uuid import UUID, uuid4
 
 from fastapi import HTTPException
@@ -75,6 +76,23 @@ class OutputDeleteTest(unittest.TestCase):
         with self.assertRaises(HTTPException) as raised:
             main.delete_output(UUID(job_id))
         self.assertEqual(raised.exception.status_code, 404)
+
+    def test_subject_download_uses_output_name_only_when_file_exists(self):
+        job_id = uuid4().hex
+        self._insert_job(job_id)
+        folder = self._make_output(job_id)
+        self.assertFalse(store.page("outputs", 0, 10)["items"][0]["has_transparent"])
+        with self.assertRaises(HTTPException) as raised:
+            main.output_image(UUID(job_id), "transparent")
+        self.assertEqual(raised.exception.status_code, 404)
+        with store.database() as db:
+            db.execute("UPDATE jobs SET settings=? WHERE id=?",
+                       ('{"download_name":"春日花园-02.png"}', job_id))
+        (folder / "subject.png").write_bytes(b"subject")
+        self.assertTrue(store.page("outputs", 0, 10)["items"][0]["has_transparent"])
+        response = main.output_image(UUID(job_id), "transparent")
+        self.assertEqual(response.path, folder / "subject.png")
+        self.assertIn("春日花园-02-透明图.png", unquote(response.headers["content-disposition"]))
 
     def test_running_job_cannot_be_deleted(self):
         job_id = uuid4().hex

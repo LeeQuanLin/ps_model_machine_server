@@ -178,5 +178,6 @@ def page(kind, offset, limit):
     if kind == "outputs":
         for item in items:
             item["download_name"] = download_name(item)
+            item["has_transparent"] = (DATA / "outputs" / item["id"] / "subject.png").is_file()
             item.pop("settings", None)
     return {"items": items, "total": count}
