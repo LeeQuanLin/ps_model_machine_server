@@ -73,6 +73,36 @@ def stash_output_folder(job_id):
     return trash
 
 
+def purge_product_files(product_id):
+    with store.database() as db:
+        pending = db.execute("SELECT cleanup_pending FROM products WHERE id=?", (product_id,)).fetchone()
+        if not pending or not pending["cleanup_pending"]:
+            return True
+        jobs = products.product_jobs(db, product_id)
+    try:
+        data_root = DATA.resolve()
+        for area, keys in (("inputs", {job["batch"] for job in jobs}),
+                           ("outputs", {job["id"] for job in jobs})):
+            root = data_root / area
+            if root.resolve() != root:
+                raise OSError("产品存储目录无效")
+            for key in keys:
+                folder = root / key
+                if not re.fullmatch(r"[0-9a-f]{32}", key) or folder.resolve() != folder:
+                    raise OSError("产品任务目录无效")
+                try:
+                    shutil.rmtree(folder)
+                except FileNotFoundError:
+                    if folder.exists():
+                        raise
+    except OSError:
+        logging.getLogger(__name__).exception("产品 %s 文件清理待重试", product_id)
+        return False
+    with store.database() as db:
+        db.execute("UPDATE products SET cleanup_pending=0 WHERE id=?", (product_id,))
+    return True
+
+
 @asynccontextmanager
 async def lifespan(app):
     if not TOKEN.strip():
@@ -80,6 +110,10 @@ async def lifespan(app):
     app.state.b_side_presets = b_side_presets()
     store.initialize()
     cleanup_output_trash()
+    with store.database() as db:
+        pending = db.execute("SELECT id FROM products WHERE cleanup_pending=1").fetchall()
+    for product in pending:
+        purge_product_files(product["id"])
     logging.getLogger("uvicorn.error").info("样机工作台队列 %s，数据目录 %s", QUEUE, DATA)
     stop = Event()
     thread = Thread(target=dispatch, args=(stop,), name="mockup-dispatch", daemon=True)
@@ -241,7 +275,29 @@ def get_product(product_id: UUID):
 
 @app.put("/api/products/{product_id}/draft")
 def create_product(product_id: UUID, form: ProductForm):
-    return products.create(product_id.hex, product_name(form.name, "产品名"))
+    try:
+        return products.create(product_id.hex, product_name(form.name, "产品名"))
+    except LookupError as exc:
+        raise HTTPException(404, str(exc)) from exc
+
+
+@app.patch("/api/products/{product_id}")
+def rename_product(product_id: UUID, form: ProductForm):
+    try:
+        return products.rename(product_id.hex, product_name(form.name, "产品名"))
+    except LookupError as exc:
+        raise HTTPException(404, str(exc)) from exc
+
+
+@app.delete("/api/products/{product_id}")
+def delete_product(product_id: UUID):
+    try:
+        products.delete(product_id.hex)
+    except LookupError as exc:
+        raise HTTPException(404, str(exc)) from exc
+    except products.ProductConflict as exc:
+        raise HTTPException(409, str(exc)) from exc
+    return {"deleted": True, "cleanup_pending": not purge_product_files(product_id.hex)}
 
 
 @app.post("/api/products/{product_id}/skus/{sku_id}", status_code=202)
@@ -277,6 +333,8 @@ def submit_sku(
         return result
     except products.ProductConflict as exc:
         raise HTTPException(409, str(exc)) from exc
+    except LookupError as exc:
+        raise HTTPException(404, str(exc)) from exc
     except FileNotFoundError as exc:
         raise HTTPException(409, "样机模板已移除，请重新选择") from exc
     finally:

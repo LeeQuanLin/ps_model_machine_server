@@ -12,6 +12,7 @@ const states = {
   done: "已完成",
   failed: "失败",
   skipped: "已跳过",
+  cancelled: "已取消",
   mockups: "生成 SKU 样机",
   subject: "生成透明图",
   detail: "制作详情页",
@@ -83,6 +84,7 @@ let view = "products",
   batchBusy = false,
   lastRecords = "";
 const selected = new Set();
+const deletingProducts = new Set();
 const limit = 24,
   assets = { art: null, pillow: null },
   loading = { art: false, pillow: false },
@@ -541,6 +543,63 @@ function syncSelection() {
   $("downloadSelected").disabled = !selected.size || batchBusy;
   $("downloadSelected").textContent = selected.size ? `批量下载（${selected.size}）` : "批量下载";
 }
+const renameDialog = $("renameDialog");
+let renameId;
+function openRename(row) {
+  if (renameDialog.open) return;
+  renameId = row.id;
+  $("renameName").value = row.name;
+  $("renameError").textContent = "";
+  renameDialog.showModal();
+  $("renameName").select();
+}
+$("cancelRename").onclick = () => renameDialog.close();
+renameDialog.addEventListener("cancel", (event) => {
+  if ($("saveRename").disabled) event.preventDefault();
+});
+$("renameForm").onsubmit = async (event) => {
+  event.preventDefault();
+  const save = $("saveRename");
+  if (save.disabled) return;
+  const controls = [$("cancelRename"), renameDialog.querySelector(".close"), save];
+  controls.forEach((button) => { button.disabled = true; });
+  $("renameName").readOnly = true;
+  $("renameError").textContent = "";
+  try {
+    await api("products/" + renameId, jsonOptions("PATCH", { name: $("renameName").value }));
+    renameDialog.close();
+    notice("产品名已更新");
+    refresh();
+  } catch (err) {
+    $("renameError").textContent = err.message;
+  } finally {
+    controls.forEach((button) => { button.disabled = false; });
+    $("renameName").readOnly = false;
+  }
+};
+async function removeProduct(row, button) {
+  if (deletingProducts.has(row.id) || !confirm(
+    `确定删除「${row.name}」？排队任务将被取消，已生成的图片会被删除。此操作无法撤销。`,
+  )) return;
+  deletingProducts.add(row.id);
+  button.disabled = true;
+  try {
+    const result = await (await api("products/" + row.id, { method: "DELETE" })).json();
+    selected.delete(row.id);
+    syncSelection();
+    notice(result.cleanup_pending ? "产品已删除，占用中的文件将在服务重启后重试清理" : "产品已删除");
+    await refresh();
+    loadStorage();
+  } catch (err) {
+    notice(err.message);
+  } finally {
+    deletingProducts.delete(row.id);
+    button.disabled = false;
+    for (const current of document.querySelectorAll("[data-product-delete]")) {
+      if (current.dataset.productDelete === row.id) current.disabled = false;
+    }
+  }
+}
 function makeProducts(items) {
   const wrap = node("div", undefined, "table-scroll");
   const table = node("table", undefined, "product-table");
@@ -609,8 +668,17 @@ function makeProducts(items) {
         action.disabled = false;
       }
     };
+    const actions = node("div", undefined, "product-actions");
+    const rename = node("button", "修改名称", "textbtn row-action");
+    rename.onclick = () => openRename(row);
+    const remove = node("button", "删除", "textbtn row-action danger");
+    remove.dataset.productDelete = row.id;
+    remove.setAttribute("aria-label", "删除 " + row.name);
+    remove.disabled = deletingProducts.has(row.id);
+    remove.onclick = () => removeProduct(row, remove);
+    actions.append(action, rename, remove);
     for (const value of [checkbox, identity, `${row.sku_done} / ${row.sku_count}`,
-      status, date(row.created_at), downloaded, action]) tr.insertCell().append(value);
+      status, date(row.created_at), downloaded, actions]) tr.insertCell().append(value);
     tr.cells[0].className = "check-cell";
   }
   wrap.append(table);
@@ -648,7 +716,7 @@ function makeTable(items, log) {
     const status = node("div");
     if (!log) {
       status.append(state(row.status));
-      if (["failed", "skipped", "blocked"].includes(row.status))
+      if (["failed", "skipped", "blocked", "cancelled"].includes(row.status))
         status.append(node("small", row.detail, "row-detail"));
     }
     const values = log
@@ -784,6 +852,10 @@ async function refresh() {
     const data = await (await api(endpoint + "?offset=" + offset + "&limit=" + limit)).json();
     if (seq !== sequence) return;
     if (view === "products") {
+      if (offset > 0 && offset >= data.total) {
+        offset = Math.max(0, Math.ceil(data.total / limit) - 1) * limit;
+        return refresh();
+      }
       const current = JSON.stringify([offset, data]);
       if (current === lastRecords) return;
       lastRecords = current;

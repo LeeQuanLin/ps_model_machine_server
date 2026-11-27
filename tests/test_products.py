@@ -4,6 +4,7 @@ from contextlib import ExitStack
 from io import BytesIO
 from pathlib import Path
 from unittest.mock import patch
+from urllib.parse import unquote
 from uuid import UUID, uuid4
 from zipfile import ZipFile
 
@@ -183,6 +184,80 @@ class ProductWorkflowTest(unittest.TestCase):
         self.assertIn("模板异常", summary["message"])
         self.assertFalse(summary["downloadable"])
         self.assertIsNone(summary["thumbnail_job_id"])
+
+    def test_rename_updates_product_and_download_names_without_rerendering(self):
+        self.add_sku("原 SKU")
+        main.rename_product(self.product_id, main.ProductForm(name="新草稿名"))
+        self.assertEqual(main.get_product(self.product_id)["name"], "新草稿名")
+        main.save_product(self.product_id, self.form)
+        jobs = self.jobs()
+        for job in jobs:
+            self.run_job(job["id"])
+        main.rename_product(self.product_id, main.ProductForm(name=" 新产品名 "))
+        self.assertEqual(main.get_product(self.product_id)["name"], "新产品名")
+        self.assertEqual(len(self.jobs()), len(jobs))
+        self.assertEqual({row["product_name"] for row in store.page("jobs", 0, 10)["items"]}, {"新产品名"})
+        self.assertEqual(store.page("outputs", 0, 10)["items"][0]["download_name"], "新产品名-详情页.zip")
+        response = main.output_image(UUID(jobs[-1]["id"]), "download")
+        self.assertIn("新产品名-详情页.zip", unquote(response.headers["content-disposition"]))
+        self.archive(response)
+        response = main.download_product(self.product_id)
+        self.assertIn("新产品名.zip", unquote(response.headers["content-disposition"]))
+        self.assertIn("新产品名/样机图/原 SKU.png", self.archive(response))
+        with self.assertRaises(HTTPException) as invalid:
+            main.rename_product(self.product_id, main.ProductForm(name="../bad"))
+        self.assertEqual(invalid.exception.status_code, 422)
+
+    def test_delete_cancels_pending_jobs_and_removes_only_related_files(self):
+        first = self.add_sku("已出图")
+        second = self.add_sku("待出图")
+        self.run_job(first)
+        with patch.object(products.secrets, "choice", side_effect=lambda rows: rows[-1]):
+            main.save_product(self.product_id, self.form)
+        jobs = self.jobs()
+        other = uuid4()
+        main.create_product(other, main.ProductForm(name="保留"))
+        with store.database() as db:
+            store.transition(db, second, "queued", "等待出图")
+
+        self.assertEqual(main.delete_product(self.product_id), {"deleted": True, "cleanup_pending": False})
+        self.assertEqual([row["id"] for row in main.list_products(0, 24)["items"]], [other.hex])
+        self.assertEqual(store.page("outputs", 0, 10)["total"], 0)
+        self.assertEqual(store.page("jobs", 0, 10)["total"], len(jobs))
+        self.assertEqual([job["status"] for job in self.jobs()], ["done", "cancelled", "cancelled", "cancelled"])
+        for job in jobs:
+            self.assertFalse((self.data / "inputs" / job["batch"]).exists())
+            self.assertFalse((self.data / "outputs" / job["id"]).exists())
+        self.run_job(second)
+        self.assertEqual(self.render_modes, [(True, False)])
+        self.assertIsNone(store.next_delivery())
+        for action in (main.get_product, main.download_product):
+            with self.assertRaises(HTTPException) as missing:
+                action(self.product_id)
+            self.assertEqual(missing.exception.status_code, 404)
+        with self.assertRaises(HTTPException):
+            main.create_product(self.product_id, self.form)
+        self.assertFalse(main.delete_product(self.product_id)["cleanup_pending"])
+
+    def test_delete_during_render_is_rejected_and_locked_files_can_be_retried(self):
+        sku = self.add_sku("进行中")
+
+        def render(*args, **kwargs):
+            with self.assertRaises(HTTPException) as active:
+                main.delete_product(self.product_id)
+            self.assertEqual(active.exception.status_code, 409)
+            return self.render_mockup(*args, **kwargs)
+
+        with patch.object(worker, "render", side_effect=render):
+            self.run_job(sku)
+        with (
+            patch.object(main.shutil, "rmtree", side_effect=PermissionError("locked")),
+            self.assertLogs(main.__name__, "ERROR"),
+        ):
+            self.assertTrue(main.delete_product(self.product_id)["cleanup_pending"])
+        self.assertTrue((self.data / "outputs" / sku).exists())
+        self.assertTrue(main.purge_product_files(self.product_id.hex))
+        self.assertFalse((self.data / "outputs" / sku).exists())
 
 
 if __name__ == "__main__":

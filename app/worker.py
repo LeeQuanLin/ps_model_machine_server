@@ -187,7 +187,7 @@ def release_inputs(batch):
     with store.database() as db:
         active = db.execute("""SELECT 1 FROM jobs j LEFT JOIN products p ON p.id=j.product_id
                                WHERE j.batch=? AND (j.status IN ('blocked','pending','queued','running')
-                                   OR (p.id IS NOT NULL AND p.saved_at IS NULL)) LIMIT 1""",
+                                   OR (p.id IS NOT NULL AND p.saved_at IS NULL AND p.deleted_at IS NULL)) LIMIT 1""",
                             (batch,)).fetchone()
     if not active:
         folder = DATA / "inputs" / batch
@@ -222,6 +222,8 @@ def generate(self, job_id):
     if UUID(job_id).hex != job_id:
         raise ValueError("无效的任务 ID")
     job = require_job(job_id, self.request.hostname)
+    if job["status"] == "cancelled":
+        return
     with store.database() as db:
         store.event(db, job_id, f"Worker {self.request.hostname} 已接单")
     # Jobs share one Photoshop instance, including the interval between quit and relaunch.
@@ -230,8 +232,14 @@ def generate(self, job_id):
             with store.database() as db:
                 store.event(db, job_id, "Photoshop 正由其他任务使用，30 秒后重试", "warning")
             raise self.retry(countdown=30)
-        job = store.get(job_id)
-        if job["status"] in store.TERMINAL or job["status"] == "blocked":
+        # Claim the job and check for deletion in the same transaction.
+        with store.database() as db:
+            db.execute("BEGIN IMMEDIATE")
+            current = db.execute("SELECT status FROM jobs WHERE id=?", (job_id,)).fetchone()["status"]
+            can_run = current not in store.TERMINAL and current != "blocked"
+            if can_run:
+                store.transition(db, job_id, "running", "正在准备模板工作副本与素材")
+        if not can_run:
             release_inputs(job["batch"])
             return
         render_started = False
@@ -240,8 +248,6 @@ def generate(self, job_id):
                 with store.database() as db:
                     store.transition(db, job_id, "queued", "等待 Photoshop 重启，60 秒后重试", "warning")
                 raise self.retry(countdown=60)
-            with store.database() as db:
-                store.transition(db, job_id, "running", "正在准备模板工作副本与素材")
             render_started = True
             folder = DATA / "outputs" / job_id
             folder.mkdir(exist_ok=True)

@@ -4,8 +4,8 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width,initial-scale=1" />
     <title>样机工作台</title>
-    <link rel="stylesheet" href="/static/studio.css?v=3" />
-    <script src="/static/studio.js?v=3" defer></script>
+    <link rel="stylesheet" href="/static/studio.css?v=4" />
+    <script src="/static/studio.js?v=4" defer></script>
   </head>
   <body>
     <aside class="rail">
@@ -72,6 +72,22 @@
         <div class="dialog-foot">
           <span class="fine" id="productHint">提交 SKU 后立即排队出图。</span>
           <button class="primary" id="saveProduct" disabled>保存产品</button>
+        </div>
+      </form>
+    </dialog>
+    <dialog id="renameDialog" aria-labelledby="renameTitle">
+      <form id="renameForm">
+        <div class="dialog-head">
+          <h2 id="renameTitle">修改产品名</h2>
+          <button class="close" type="button" aria-label="关闭">×</button>
+        </div>
+        <label class="field">产品名
+          <input id="renameName" maxlength="200" required />
+        </label>
+        <p id="renameError" class="form-error" role="alert"></p>
+        <div class="dialog-foot rename-foot">
+          <button class="secondary" type="button" id="cancelRename">取消</button>
+          <button class="primary" id="saveRename">保存</button>
         </div>
       </form>
     </dialog>

@@ -588,6 +588,15 @@ td .mono {
   padding: 6px 0;
   font-weight: 600;
 }
+.product-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0 12px;
+  min-width: 120px;
+}
+.product-actions .danger {
+  color: #a33b32;
+}
 .row-detail {
   display: block;
   max-width: 34ch;
@@ -741,6 +750,12 @@ dialog::backdrop {
 }
 #productDialog {
   width: 620px;
+}
+#renameDialog {
+  width: 400px;
+}
+.rename-foot {
+  justify-content: flex-end;
 }
 #generate {
   width: 960px;

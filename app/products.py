@@ -12,7 +12,8 @@ class ProductConflict(ValueError):
 
 
 def find(db, product_id):
-    return db.execute("SELECT * FROM products WHERE id=?", (product_id,)).fetchone()
+    return db.execute("""SELECT * FROM products WHERE id=? AND deleted_at IS NULL""",
+                      (product_id,)).fetchone()
 
 
 def product_jobs(db, product_id):
@@ -24,7 +25,38 @@ def create(product_id, name):
         db.execute("INSERT OR IGNORE INTO products(id,name,created_at) VALUES (?,?,?)",
                    (product_id, name, store.now()))
         product = find(db, product_id)
+        if product is None:
+            raise LookupError("找不到产品")
         return summarize(product, product_jobs(db, product_id))
+
+
+def rename(product_id, name):
+    with store.database() as db:
+        if not db.execute("UPDATE products SET name=? WHERE id=? AND deleted_at IS NULL",
+                          (name, product_id)).rowcount:
+            raise LookupError("找不到产品")
+        return {"id": product_id, "name": name}
+
+
+def delete(product_id):
+    with store.database() as db:
+        db.execute("BEGIN IMMEDIATE")
+        product = db.execute("SELECT * FROM products WHERE id=?", (product_id,)).fetchone()
+        if product is None:
+            raise LookupError("找不到产品")
+        if product["deleted_at"]:
+            return
+        jobs = product_jobs(db, product_id)
+        if any(job["status"] == "running" for job in jobs):
+            raise ProductConflict("产品正在出图，请等当前任务结束后再删除")
+        stamp = store.now()
+        db.execute("UPDATE products SET deleted_at=?,cleanup_pending=1 WHERE id=?", (stamp, product_id))
+        for job in jobs:
+            if job["status"] not in store.TERMINAL:
+                store.transition(db, job["id"], "cancelled", "产品已删除，任务已取消")
+            elif job["status"] == "done" and not job["deleted_at"]:
+                store.mark_output_deleted(db, job["id"])
+        store.event(db, "", f"产品「{product['name']}」已删除")
 
 
 def add_sku(product_id, sku_id, batch, name, template, available, settings):
@@ -132,7 +164,9 @@ def summarize(product, jobs):
         status = "subject"
     else:
         status = "detail"
-    return {**dict(product), "status": status, "sku_count": len(skus), "sku_done": completed,
+    return {"id": product["id"], "name": product["name"], "created_at": product["created_at"],
+            "saved_at": product["saved_at"], "downloaded_at": product["downloaded_at"],
+            "status": status, "sku_count": len(skus), "sku_done": completed,
             "downloadable": download, "thumbnail_job_id": thumbnail_job_id,
             "message": failed["detail"] if failed else "",
             "skus": [{"id": job["id"], "name": json.loads(job["settings"])["sku_name"],
@@ -144,7 +178,7 @@ def record_download(product_ids):
     with store.database() as db:
         db.execute("BEGIN IMMEDIATE")
         stamp = store.now()
-        db.executemany("UPDATE products SET downloaded_at=? WHERE id=?",
+        db.executemany("UPDATE products SET downloaded_at=? WHERE id=? AND deleted_at IS NULL",
                        ((stamp, product_id) for product_id in product_ids))
 
 
@@ -158,8 +192,9 @@ def get(product_id):
 def page(offset, limit):
     with store.database() as db:
         db.execute("BEGIN")
-        total = db.execute("SELECT count(*) FROM products").fetchone()[0]
-        rows = db.execute("SELECT * FROM products ORDER BY created_at DESC,rowid DESC LIMIT ? OFFSET ?",
+        total = db.execute("SELECT count(*) FROM products WHERE deleted_at IS NULL").fetchone()[0]
+        rows = db.execute("""SELECT * FROM products WHERE deleted_at IS NULL
+                             ORDER BY created_at DESC,rowid DESC LIMIT ? OFFSET ?""",
                           (limit, offset)).fetchall()
         jobs = defaultdict(list)
         if rows:

@@ -8,7 +8,7 @@ from uuid import uuid4
 
 from app.config import DATA, QUEUE, revision
 
-TERMINAL = {"done", "skipped", "failed"}
+TERMINAL = {"done", "skipped", "failed", "cancelled"}
 
 
 def now():
@@ -53,7 +53,7 @@ def initialize(*, migrate_queue=True):
             );
             CREATE TABLE IF NOT EXISTS products (
                 id TEXT PRIMARY KEY, name TEXT NOT NULL, created_at TEXT NOT NULL, saved_at TEXT,
-                downloaded_at TEXT
+                downloaded_at TEXT, deleted_at TEXT, cleanup_pending INTEGER NOT NULL DEFAULT 0
             );
         """)
         db.execute("BEGIN IMMEDIATE")
@@ -67,6 +67,10 @@ def initialize(*, migrate_queue=True):
         product_columns = {row["name"] for row in db.execute("PRAGMA table_info(products)")}
         if "downloaded_at" not in product_columns:
             db.execute("ALTER TABLE products ADD COLUMN downloaded_at TEXT")
+        if "deleted_at" not in product_columns:
+            db.execute("ALTER TABLE products ADD COLUMN deleted_at TEXT")
+        if "cleanup_pending" not in product_columns:
+            db.execute("ALTER TABLE products ADD COLUMN cleanup_pending INTEGER NOT NULL DEFAULT 0")
         db.execute("CREATE INDEX IF NOT EXISTS job_product ON jobs(product_id)")
         db.execute("CREATE INDEX IF NOT EXISTS job_batch ON jobs(batch)")
         if migrate_queue:
@@ -86,6 +90,8 @@ def event(db, job_id, message, level="info"):
 
 
 def download_name(job):
+    if "product_name" in job.keys() and job["kind"] == "detail" and job["product_name"]:
+        return f"{job['product_name']}-详情页.zip"
     custom = json.loads(job["settings"]).get("download_name")
     stem = job["template"].rsplit("/", 1)[-1].rsplit(".", 1)[0]
     return custom or f"{stem}-{job['id'][:8]}.png"
@@ -175,6 +181,7 @@ def mark_output_deleted(db, job_id):
 def dispatch_error(job_id, exc):
     message = f"投递到 Redis 失败（{type(exc).__name__}），15 秒后重试"
     with database() as db:
+        db.execute("BEGIN IMMEDIATE")
         row = db.execute("SELECT detail FROM jobs WHERE id=? AND status='pending'", (job_id,)).fetchone()
         if row:
             db.execute("UPDATE jobs SET next_dispatch=?, detail=? WHERE id=?",
@@ -185,7 +192,8 @@ def dispatch_error(job_id, exc):
 
 def get(job_id):
     with database() as db:
-        row = db.execute("SELECT * FROM jobs WHERE id=?", (job_id,)).fetchone()
+        row = db.execute("""SELECT j.*,p.name AS product_name FROM jobs j
+                            LEFT JOIN products p ON p.id=j.product_id WHERE j.id=?""", (job_id,)).fetchone()
         return dict(row) if row else None
 
 
