@@ -137,7 +137,7 @@ class ProductWorkflowTest(unittest.TestCase):
         self.assertEqual(main.output_image(UUID(detail["id"]), "image", "002.png").path.name, "002.png")
 
         contents = [
-            "新品/样机图/SKU-B.png", "新品/样机图/SKU-A.png", "新品/透明图/SKU-A-透明图.png",
+            "新品/SKU-B.png", "新品/SKU-A.png", "新品/SKU-A-透明图.png",
             "新品/详情页/001.png", "新品/详情页/002.png",
         ]
         single = self.queue_export(self.product_id)
@@ -178,7 +178,7 @@ class ProductWorkflowTest(unittest.TestCase):
         batch_stamp = "2026-11-27T09:00:00.000+00:00"
         with patch.object(store, "now", return_value=batch_stamp):
             self.assertEqual(self.archive(main.download_export(batch)), contents + [
-                "新品 (2)/样机图/SKU-C.png", "新品 (2)/透明图/SKU-C-透明图.png",
+                "新品 (2)/SKU-C.png", "新品 (2)/SKU-C-透明图.png",
                 "新品 (2)/详情页/001.png", "新品 (2)/详情页/002.png",
             ])
         self.assertEqual({item["downloaded_at"] for item in main.list_products(0, 24)["items"]}, {batch_stamp})
@@ -229,7 +229,7 @@ class ProductWorkflowTest(unittest.TestCase):
         self.assertTrue(exports.process_next(self.data))
         response = main.download_export(export_id)
         self.assertIn("新产品名.zip", unquote(response.headers["content-disposition"]))
-        self.assertIn("新产品名/样机图/原 SKU.png", self.archive(response))
+        self.assertIn("新产品名/原 SKU.png", self.archive(response))
         with self.assertRaises(HTTPException) as invalid:
             main.rename_product(self.product_id, main.ProductForm(name="../bad"))
         self.assertEqual(invalid.exception.status_code, 422)
@@ -300,7 +300,22 @@ class ProductWorkflowTest(unittest.TestCase):
         self.assertTrue(exports.process_next(self.data))
         self.assertFalse(path.with_suffix(".part").exists())
         main.delete_product(self.product_id)
-        self.assertIn("新品/样机图/SKU.png", self.archive(main.download_export(export_id)))
+        self.assertIn("新品/SKU.png", self.archive(main.download_export(export_id)))
+
+    def test_export_renames_subject_if_sku_filename_is_already_in_use(self):
+        self.add_sku("SKU")
+        self.add_sku("sku-透明图")
+        self.add_sku("sku-透明图 (2)")
+        with patch.object(products.secrets, "choice", side_effect=lambda rows: rows[0]):
+            main.save_product(self.product_id, self.form)
+        for job in self.jobs():
+            self.run_job(job["id"])
+        export_id = self.queue_export(self.product_id)
+        self.assertTrue(exports.process_next(self.data))
+        self.assertEqual(self.archive(main.download_export(export_id)), [
+            "新品/SKU.png", "新品/sku-透明图.png", "新品/sku-透明图 (2).png", "新品/SKU-透明图 (3).png",
+            "新品/详情页/001.png", "新品/详情页/002.png",
+        ])
 
     def test_failed_export_does_not_block_later_exports_or_product_deletion(self):
         self.add_sku("SKU")

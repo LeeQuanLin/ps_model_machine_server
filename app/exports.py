@@ -1,10 +1,21 @@
 import json
 import logging
+from os.path import splitext
 from uuid import uuid4
 from zipfile import ZipFile
 
 from app import products, store
 from app.worker import job_lock
+
+
+def unique_name(stem, used_names, extension=""):
+    name = stem + extension
+    number = 2
+    while name.casefold() in used_names:
+        name = f"{stem} ({number}){extension}"
+        number += 1
+    used_names.add(name.casefold())
+    return name
 
 
 def submit(data, ids):
@@ -22,12 +33,7 @@ def submit(data, ids):
             name = product["name"]
             if not products.summarize(product, jobs)["downloadable"]:
                 raise products.ProductConflict(f"「{name}」的输出未完成或已删除")
-            prefix = name
-            suffix = 2
-            while prefix.casefold() in used_names:
-                prefix = f"{name} ({suffix})"
-                suffix += 1
-            used_names.add(prefix.casefold())
+            prefix = unique_name(name, used_names)
             for job in jobs:
                 folder = outputs / job["id"]
                 if job["kind"] == "detail":
@@ -37,10 +43,16 @@ def submit(data, ids):
                     manifest.extend((path.relative_to(outputs).as_posix(), f"{prefix}/详情页/{path.name}")
                                     for path in slices)
                 else:
-                    section, filename = ("透明图", "subject.png") if job["kind"] == "subject" else ("样机图", "render.png")
+                    is_subject = job["kind"] == "subject"
+                    section, filename = ("透明图", "subject.png") if is_subject else ("样机图", "render.png")
                     if not (folder / filename).is_file():
                         raise products.ProductConflict(f"「{name}」的{section}已丢失")
-                    manifest.append((f"{job['id']}/{filename}", f"{prefix}/{section}/{store.download_name(job)}"))
+                    output_name = store.download_name(job)
+                    if is_subject:
+                        mockup_names = {store.download_name(sku).casefold() for sku in jobs if sku["kind"] == "mockup"}
+                        stem, extension = splitext(output_name)
+                        output_name = unique_name(stem, mockup_names, extension)
+                    manifest.append((f"{job['id']}/{filename}", f"{prefix}/{output_name}"))
         filename = f"{name}.zip" if len(ids) == 1 else "产品输出图.zip"
         db.execute("""INSERT INTO exports(id,filename,product_count,manifest,status,created_at)
                       VALUES (?,?,?,?,'pending',?)""",

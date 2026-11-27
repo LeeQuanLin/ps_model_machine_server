@@ -136,7 +136,9 @@ RENDER_SCRIPT = r"""
                 if (doc.bitsPerChannel === BitsPerChannelType.THIRTYTWO)
                     doc.bitsPerChannel = BitsPerChannelType.SIXTEEN;
             }
-            doc.saveAs(new File(path), new PNGSaveOptions(), true, Extension.LOWERCASE);
+            var options = new PNGSaveOptions();
+            options.compression = 9;
+            doc.saveAs(new File(path), options, true, Extension.LOWERCASE);
         } finally {
             close(copy);
         }

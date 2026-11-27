@@ -90,14 +90,15 @@ PHOTOSHOP_SCRIPT = r"""
     function exportSlices(doc, height) {
         var width = Math.round(doc.width.as("px")), total = Math.round(doc.height.as("px"));
         var whole = doc.activeHistoryState, count = 0;
+        var options = new PNGSaveOptions();
+        options.compression = 9;
         for (var top = 0; top < total; top += height) {
             count++;
             stage = "导出第 " + count + " 张切片";
             doc.crop([px(0), px(top), px(width), px(Math.min(top + height, total))]);
             var name = String(count);
             while (name.length < 3) name = "0" + name;
-            doc.saveAs(new File(job.output + "/" + name + ".png"), new PNGSaveOptions(),
-                       true, Extension.LOWERCASE);
+            doc.saveAs(new File(job.output + "/" + name + ".png"), options, true, Extension.LOWERCASE);
             if (top + height < total) doc.activeHistoryState = whole;
         }
         return count;
